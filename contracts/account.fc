@@ -1,0 +1,303 @@
+#include "constants.fc";
+#include "op-codes.fc";
+#include "imports/stdlib.fc";
+
+const int min_account_balance = 3 * TON_STEP;
+const int fw_fee = TON_STEP;
+
+(slice, slice, cell, cell, int, int, int) load_data() inline {
+    slice ds = get_data().begin_parse();
+    var (owner, root_addr, question_code, question_ref_code) = (ds~load_msg_addr(), ds~load_msg_addr(), ds~load_ref(), ds~load_ref());
+    if (ds.slice_bits() > 0) {
+        return (owner, root_addr, question_code, question_ref_code, ds~load_uint(32), ds~load_uint(32), ds~load_coins());
+    } else {
+        return (owner, root_addr, question_code, question_ref_code, null(), null(), null());
+    }
+}
+
+() store_data(slice root_addr, slice owner, cell question_code, cell question_ref_code, int next_assigned_question_idx, int next_submitted_question_idx, int min_price) impure {
+    set_data(
+        begin_cell()
+            .store_slice(owner)
+            .store_slice(root_addr)
+            .store_ref(question_code)
+            .store_ref(question_ref_code)
+            .store_uint(next_assigned_question_idx, 32)
+            .store_uint(next_submitted_question_idx, 32)
+            .store_coins(min_price)
+            .end_cell()
+    );
+}
+
+cell calculate_question_state_init(slice parent_addr, int id, cell question_code) {
+    cell data = begin_cell()
+        .store_slice(parent_addr)
+        .store_uint(id, 32)
+        .end_cell();
+
+    return begin_cell()
+        .store_uint(0, 2)
+        .store_dict(question_code)
+        .store_dict(data)
+        .store_uint(0, 1)
+        .end_cell();
+}
+
+slice calculate_question_adddress(cell state_init) {
+    return begin_cell().store_uint(4, 3)
+        .store_int(0, 8)
+        .store_uint(cell_hash(state_init), 256)
+        .end_cell()
+        .begin_parse();
+}
+
+slice deploy_question(cell content, slice submitter_addr, slice owner_addr, slice service_root_addr, int id, cell question_code, int amount) impure {
+    cell state_init = calculate_question_state_init(my_address(), id, question_code);
+    slice question_address = calculate_question_adddress(state_init);
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(question_address)
+        .store_coins(amount)
+        .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
+        .store_ref(state_init)
+        .store_ref(begin_cell()
+            .store_uint(op::deploy_question, 32)
+            .store_ref(content)
+            .store_slice(submitter_addr)
+            .store_ref(begin_cell()
+                .store_slice(owner_addr)
+                .store_slice(service_root_addr)
+                .end_cell())
+            .end_cell()
+        );
+
+    send_raw_message(msg.end_cell(), 1);
+
+    return question_address;
+}
+
+slice get_question_addr(int id) impure method_id {
+    var (_, _, question_code, _, _, _, _) = load_data();
+
+    return calculate_question_adddress(calculate_question_state_init(my_address(), id, question_code));
+}
+
+int get_next_id() method_id {
+    var (_, _, _, _, next_id, _, _) = load_data();
+
+    return next_id;
+}
+
+int get_next_submitted_question_id() method_id {
+    var (_, _, _, _, _, next_id, _) = load_data();
+
+    return next_id;
+}
+
+int get_price() method_id {
+    var (_, _, _, _, _, _, price) = load_data();
+
+    return price;
+}
+
+() send_excess(slice addr, int amount) impure {
+    var msg = begin_cell()
+        .store_uint(0x10, 6)
+        .store_slice(addr)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(op::excess_return, 32);
+
+    send_raw_message(msg.end_cell(), 1);
+}
+
+cell calculate_account_state_init(slice owner_addr, slice root_addr, cell account_code, cell question_code, cell question_ref_code) {
+    cell data = begin_cell()
+        .store_slice(owner_addr)
+        .store_slice(root_addr)
+        .store_ref(question_code)
+        .store_ref(question_ref_code)
+        .end_cell();
+
+    return begin_cell()
+        .store_uint(0, 2)
+        .store_dict(account_code)
+        .store_dict(data)
+        .store_uint(0, 1)
+        .end_cell();
+}
+
+cell calculate_question_ref_state_init(cell question_ref_code, slice parent_account_addr, int id) {
+    cell data = begin_cell()
+        .store_slice(parent_account_addr)
+        .store_uint(id, 32)
+        .store_ref(question_ref_code)
+        .end_cell();
+
+    return begin_cell()
+        .store_uint(0, 2)
+        .store_dict(question_ref_code)
+        .store_dict(data)
+        .store_uint(0, 1)
+        .end_cell();
+}
+
+
+slice calculate_account_adddress(cell state_init) {
+    return begin_cell().store_uint(4, 3)
+        .store_int(0, 8)
+        .store_uint(cell_hash(state_init), 256)
+        .end_cell()
+        .begin_parse();
+}
+
+slice calculate_question_ref_adddress(cell state_init) {
+    return begin_cell().store_uint(4, 3)
+        .store_int(0, 8)
+        .store_uint(cell_hash(state_init), 256)
+        .end_cell()
+        .begin_parse();
+}
+
+slice get_submitted_question_address(int id) method_id {
+    (_, _, _, cell question_ref_code, _, _, _) = load_data();
+    cell state_init = calculate_question_ref_state_init(question_ref_code, my_address(), id);
+
+    return calculate_question_ref_adddress(state_init);
+}
+
+cell get_all_data() method_id {
+    (slice owner, _, _, _,
+        int next_question_idx, int next_submitted_question_idx, int min_price) = load_data();
+
+    return begin_cell()
+        .store_slice(owner)
+        .store_coins(min_price)
+        .store_uint(next_question_idx, 32)
+        .store_uint(next_submitted_question_idx, 32)
+        .end_cell();
+}
+
+() deploy_question_ref(cell question_ref_code, slice parent_account_addr, int id, slice question_addr) impure {
+    cell state_init = calculate_question_ref_state_init(question_ref_code, parent_account_addr, id);
+    slice addr = calculate_question_ref_adddress(state_init);
+
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(addr)
+        .store_coins(fw_fee)
+        .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
+        .store_ref(state_init)
+        .store_ref(begin_cell()
+            .store_slice(question_addr)
+            .end_cell()
+        );
+    send_raw_message(msg.end_cell(), 1);
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+
+    if (flags & 1) {
+        return ();
+    }
+    slice sender_addr = cs~load_msg_addr();
+
+    cs~load_msg_addr(); ;; skip dst
+    cs~load_coins(); ;; skip value
+    cs~skip_bits(1); ;; skip extracurrency collection
+    cs~load_coins(); ;; skip ihr_fee
+
+    int op = in_msg_body~load_uint(32);
+
+    (slice owner, slice root_addr, cell question_code, cell question_ref_code,
+        int next_question_idx, int next_submitted_question_idx, int min_price) = load_data();
+
+    if (op == op::deploy_account & null?(next_question_idx)) {
+        throw_unless(403, equal_slices(sender_addr, root_addr));
+        int min_price_from_msg = in_msg_body~load_coins();
+        store_data(sender_addr, owner, question_code, question_ref_code, 0, 0, min_price_from_msg);
+        if (my_balance > min_account_balance) {
+            int excess_amount = min(my_balance - min_account_balance - fw_fee, msg_value - fw_fee);
+            send_excess(owner, excess_amount);
+        } else {
+            throw_if(405, my_balance < min_account_balance); ;;not enough coins in transaction
+        }
+        return ();
+    }
+    if (op == op::update_price) {
+        throw_unless(403, equal_slices(sender_addr, owner));
+        int new_price = in_msg_body~load_coins();
+        store_data(sender_addr, owner, question_code, question_ref_code,
+            next_question_idx, next_submitted_question_idx, new_price);
+        return ();
+    }
+    if (op == op::create_question) {
+        throw_if(403, equal_slices(sender_addr, owner));
+        int to_share = msg_value;
+        if (my_balance - msg_value < min_account_balance) {
+            to_share = my_balance - min_account_balance;
+        }
+
+        int notification_amount = min_account_balance + fw_fee;
+        if (to_share <= min_price + notification_amount) {
+            throw(405);
+        }
+        cell content = in_msg_body~load_ref();
+        slice question_contract_addr = deploy_question(
+            content, sender_addr, owner,
+            root_addr, next_question_idx, question_code,
+            to_share - notification_amount
+        );
+        store_data(root_addr, owner, question_code, question_ref_code,
+            next_question_idx + 1, next_submitted_question_idx, min_price);
+
+        ;; Notify other account
+        slice q_sender_addr = sender_addr;
+        cell sender_account_state_init = calculate_account_state_init(
+            q_sender_addr, root_addr, my_code(),
+            question_code, question_ref_code);
+
+        slice sender_account_addr = calculate_account_adddress(sender_account_state_init);
+        var notify_msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(sender_account_addr)
+            .store_coins(notification_amount)
+            .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
+            .store_ref(sender_account_state_init)
+            .store_ref(begin_cell()
+                .store_uint(op::question_deployed, 32)
+                .store_slice(question_contract_addr)
+                .end_cell()
+            );
+        send_raw_message(notify_msg.end_cell(), 1);
+
+        return ();
+    }
+    if (op == op::question_deployed) {
+        var next_question_idx_2 = next_question_idx;
+        var next_submitted_question_idx_2 = next_submitted_question_idx;
+        var min_price_2 = min_price;
+        if (null?(next_question_idx_2)) {
+            next_question_idx_2 = 0;
+        }
+        if (null?(next_submitted_question_idx_2)) {
+            next_submitted_question_idx_2 = 0;
+        }
+        if (null?(min_price_2)) {
+            min_price_2 = 0;
+        }
+        ;;;-------------------
+        slice question_addr_from_msg = in_msg_body~load_msg_addr();
+        deploy_question_ref(
+            question_ref_code, my_address(),
+            next_submitted_question_idx_2, question_addr_from_msg);
+        store_data(
+            root_addr, owner, question_code,
+            question_ref_code,next_question_idx_2,
+            next_submitted_question_idx_2 + 1, min_price_2);
+        return ();
+    }
+    throw(404);
+}

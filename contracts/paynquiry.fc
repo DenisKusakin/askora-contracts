@@ -1,0 +1,138 @@
+#include "constants.fc";
+#include "op-codes.fc";
+#include "imports/stdlib.fc";
+
+const int min_account_balance = 1 * TON_STEP;
+
+(cell, cell, cell, slice) load_data() impure {
+    slice ds = get_data().begin_parse();
+    (cell account_code, cell question_code, cell question_ref_code) = (ds~load_ref(), ds~load_ref(), ds~load_ref());
+    if (ds.slice_bits() > 0) {
+        return (account_code, question_code, question_ref_code, ds~load_msg_addr());
+    } else {
+        return (account_code, question_code, question_ref_code, null());
+    }
+}
+
+() store_data(cell account_code, cell question_code, cell question_ref_code, slice owner) impure {
+    set_data(
+        begin_cell()
+            .store_ref(account_code)
+            .store_ref(question_code)
+            .store_ref(question_ref_code)
+            .store_slice(owner)
+            .end_cell()
+    );
+}
+
+cell calculate_account_state_init(slice owner_addr, cell account_code, cell question_code, cell question_ref_code) {
+    cell data = begin_cell()
+        .store_slice(owner_addr)
+        .store_slice(my_address())
+        .store_ref(question_code)
+        .store_ref(question_ref_code)
+        .end_cell();
+
+    return begin_cell()
+        .store_uint(0, 2)
+        .store_dict(account_code)
+        .store_dict(data)
+        .store_uint(0, 1)
+        .end_cell();
+}
+
+slice calculate_account_adddress(cell state_init) {
+    return begin_cell().store_uint(4, 3)
+        .store_int(0, 8)
+        .store_uint(cell_hash(state_init), 256)
+        .end_cell()
+        .begin_parse();
+}
+
+() deploy_account(slice owner, cell account_code, cell question_code, cell question_ref_code, int min_price) impure {
+    cell state_init = calculate_account_state_init(owner, account_code, question_code, question_ref_code);
+    slice account_address = calculate_account_adddress(state_init);
+
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(account_address)
+        .store_coins(0)
+        .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
+        .store_ref(state_init)
+        .store_ref(begin_cell()
+            .store_uint(op::deploy_account, 32)
+            .store_coins(min_price)
+            .end_cell()
+        );
+
+    send_raw_message(msg.end_cell(), 64);
+}
+
+slice get_account_addr(slice owner) method_id {
+    slice ds = get_data().begin_parse();
+    var (_, account_code, question_code, question_ref_code) = (ds~load_msg_addr(), ds~load_ref(), ds~load_ref(), ds~load_ref());
+    cell state_init = calculate_account_state_init(owner, account_code, question_code, question_ref_code);
+    slice account_address = calculate_account_adddress(state_init);
+
+    return account_address;
+}
+
+cell get_account_code() method_id {
+    slice ds = get_data().begin_parse();
+    var (_, account_code) = (ds~load_msg_addr(), ds~load_ref());
+
+    return account_code;
+}
+
+() send_coins(slice addr, int amount, int op) impure {
+    var msg = begin_cell()
+        .store_uint(0x10, 6)
+        .store_slice(addr)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(op, 32);
+
+    send_raw_message(msg.end_cell(), 1);
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    ;; if (in_msg_body.slice_empty?()) {
+    ;;     return ();
+    ;; }
+
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+
+    if (flags & 1) {
+        return ();
+    }
+    slice sender_addr = cs~load_msg_addr();
+
+    cs~load_msg_addr(); ;; skip dst
+    cs~load_coins(); ;; skip value
+    cs~skip_bits(1); ;; skip extracurrency collection
+    cs~load_coins(); ;; skip ihr_fee
+
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+    (cell account_code, cell question_code, cell question_ref_code, slice owner) = load_data();
+    if (op == op::deploy_root & null?(owner)) {
+        store_data(account_code, question_code, question_ref_code, sender_addr);
+        return ();
+    }
+    if (op == op::create_account) {
+        int min_price = in_msg_body~load_coins();
+        deploy_account(sender_addr, account_code, question_code, question_ref_code, min_price);
+        return ();
+    }
+    if (op == op::service_fee) {
+        return ();
+    }
+    if (op == op::withdraw_safe) {
+        throw_unless(403, equal_slices(sender_addr, owner));
+        int to_withdraw = my_balance - min_account_balance;
+        send_coins(owner, to_withdraw, op::paynquiry_withdrawal);
+        return ();
+    }
+    throw(123);
+}

@@ -1,0 +1,12 @@
+#include "op-codes.fc";
+#include "imports/stdlib.fc";
+
+slice get_question_addr() method_id {
+    slice data = get_data().begin_parse();
+    return data~load_msg_addr();
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    slice question_addr = in_msg_body~load_msg_addr();
+    set_data(begin_cell().store_slice(question_addr).end_cell());
+}
