@@ -299,5 +299,5 @@ cell get_all_data() method_id {
             next_submitted_question_idx_2 + 1, min_price_2);
         return ();
     }
-    throw(404);
+    throw(400);
 }

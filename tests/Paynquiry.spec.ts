@@ -616,7 +616,7 @@ describe('Paynquiry', () => {
         );
     });
 
-    it('account storage fee during one year should be around 0.03 TON', async () => {
+    it('account storage fee should be around 0.03 TON/year', async () => {
         let blockchain = await Blockchain.create();
         const time1 = Math.floor(Date.now() / 1000);
         const time2 = time1 + 365 * 24 * 60 * 60;

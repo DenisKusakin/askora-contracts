@@ -134,5 +134,5 @@ cell get_account_code() method_id {
         send_coins(owner, to_withdraw, op::paynquiry_withdrawal);
         return ();
     }
-    throw(123);
+    throw(400);
 }
