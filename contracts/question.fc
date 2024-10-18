@@ -5,7 +5,7 @@
 const int min_account_balance = TON_STEP;
 const int fw_fee = TON_STEP;
 const int service_fee_percent = 5; ;;5%
-const int max_valid_seconds = 7 * 24 * 60 * 60; ;;3 days
+const int max_valid_seconds = 7 * 24 * 60 * 60; ;;7 days
 
 (slice, int, cell, slice, slice, slice, slice, int, int, cell, int) load_data() impure {
     slice ds = get_data().begin_parse();

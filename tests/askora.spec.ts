@@ -7,27 +7,23 @@ import {
     TreasuryContract,
 } from '@ton/sandbox';
 import { Address, beginCell, Cell, fromNano, toNano, TupleBuilder } from '@ton/core';
-import { Paynquiry } from '../wrappers/Paynquiry';
 import '@ton/test-utils';
 import { compile } from '@ton/blueprint';
 import { Account } from '../wrappers/Account';
 import { Question } from '../wrappers/Question';
 import { randomBytes } from 'node:crypto';
-import { crc32 } from 'node:zlib';
+import * as fs from 'node:fs/promises';
 
 const TON_STEP = 0.01;
 const MIN_QUESTION_BALANCE = 1 * TON_STEP;
 const MIN_ACCOUNT_BALANCE = 3 * TON_STEP;
-const MIN_ROOT_BALANCE = 1 * TON_STEP;
 
-describe('Paynquiry', () => {
-    let rootCode: Cell;
+describe('All tests', () => {
     let accountCode: Cell;
     let questionCode: Cell;
     let questionRefCode: Cell;
 
     beforeAll(async () => {
-        rootCode = await compile('Paynquiry');
         accountCode = await compile('account');
         questionCode = await compile('question');
         questionRefCode = await compile('question-ref');
@@ -35,7 +31,6 @@ describe('Paynquiry', () => {
 
     let blockchain: Blockchain;
     let deployer: SandboxContract<TreasuryContract>;
-    let paynquiry: SandboxContract<Paynquiry>;
 
     beforeEach(async () => {
         blockchain = await Blockchain.create();
@@ -48,91 +43,51 @@ describe('Paynquiry', () => {
         // }
 
         deployer = await blockchain.treasury('deployer', { balance: toNano('10') });
-
-        paynquiry = blockchain.openContract(
-            Paynquiry.createFromConfig(
-                {
-                    accountCode,
-                    questionCode,
-                    questionRefCode,
-                },
-                rootCode,
-            ),
-        );
-
-        const deployResult = await paynquiry.sendDeploy(deployer.getSender(), toNano('0.5'));
-        expect(deployResult.transactions).toHaveTransaction({
-            from: deployer.address,
-            to: paynquiry.address,
-            deploy: true,
-            success: true,
-        });
-    });
-
-    it('should deploy root contract', async () => {
-        // the check is done inside beforeEach
-        // blockchain and paynquiry are ready to use
-        let c: SmartContract = await blockchain.getContract(paynquiry.address);
-        expect(parseFloat(fromNano(c.balance))).toBeCloseTo(0.5);
     });
 
     async function createNewAccount(username: string | undefined = undefined, price: bigint = toNano('10')) {
         let user = await blockchain.treasury(username || 'user-1');
-        let op = BigInt("0x5f0ec1a3");
-        let queryId = 1234;
 
-        let res = await blockchain.sendMessage(
-            internal({
-                from: user.address,
-                to: paynquiry.address,
-                value: toNano('1'),
-                body: beginCell().storeUint(op, 32).storeUint(queryId, 64).storeCoins(price).endCell(),
-            }),
-        );
-        let accountAddrReceived = await paynquiry.getAccountAddress(user.getSender().address);
-        let accountContract = await blockchain.openContract(Account.createFromAddress(accountAddrReceived));
+        let accountContract = blockchain.openContract(Account.createFromConfig({
+            owner: user.address,
+            serviceOwner: deployer.address
+        }, accountCode))
+        await accountContract.sendDeploy(user.getSender(), toNano('1'), {minPrice: price, questionCode, questionRefCode})
 
         return accountContract;
     }
 
     async function createNewAccount2(
         blockchain: Blockchain,
-        paynquiry: SandboxContract<Paynquiry>,
         sender: SandboxContract<TreasuryContract>,
+        appOwnerAddr: Address,
         price: bigint = toNano('10'),
     ) {
-        let op = BigInt("0x5f0ec1a3");
-        let queryId = 1234;
 
-        sender.send({
-            to: paynquiry.address,
-            value: toNano('1'),
-            body: beginCell().storeUint(op, 32).storeUint(queryId, 64).storeCoins(price).endCell(),
-        });
-
-        let accountAddrReceived = await paynquiry.getAccountAddress(sender.address);
-        let accountContract = blockchain.openContract(Account.createFromAddress(accountAddrReceived));
+        let accountContract = blockchain.openContract(Account.createFromConfig({
+            owner: sender.address,
+            serviceOwner: appOwnerAddr
+        }, accountCode))
+        await accountContract.sendDeploy(sender.getSender(), toNano('1'), {minPrice: price, questionCode, questionRefCode})
 
         return accountContract;
     }
 
+    it('save compiled', async () => {
+        let imports = `import { Cell } from '@ton/core';\n`
+        let accountCodeStr = `export const ACCOUNT_CODE=Cell.fromBase64("${accountCode.toBoc().toString('base64')}")\n`;
+        let questionCodeStr = `export const QUESTION_CODE=Cell.fromBase64("${questionCode.toBoc().toString('base64')}")\n`;
+        let questionRefCodeStr = `export const QUESTION_REF_CODE=Cell.fromBase64("${questionRefCode.toBoc().toString('base64')}")\n`;
+        await fs.writeFile("./compiled/contracts-codes.js", `${imports}\n${accountCodeStr}\n${questionCodeStr}\n${questionRefCodeStr}`)
+    })
+
     it('should deploy account', async () => {
         let user = await blockchain.treasury('user-1');
 
-        let op = BigInt("0x5f0ec1a3");
-        let queryId = 1234;
-        await blockchain.sendMessage(
-            internal({
-                from: user.getSender().address,
-                to: paynquiry.address,
-                value: toNano('1.5'),
-                body: beginCell().storeUint(op, 32).storeUint(queryId, 64).storeCoins(toNano('10')).endCell(),
-            }),
-        );
-        let accountAddrReceived = await paynquiry.getAccountAddress(user.getSender().address);
-        let accountContract = await blockchain.getContract(accountAddrReceived);
+        let accountContract = await createNewAccount('user-1', toNano(10))
+        let accountContractAddr = accountContract.address
 
-        let actualFullData = await blockchain.openContract(Account.createFromAddress(accountAddrReceived)).getAllData()
+        let actualFullData = await blockchain.openContract(Account.createFromAddress(accountContractAddr)).getAllData()
         let actualFullData2 = {
             owner: actualFullData.owner.toRawString(),
             minPrice: actualFullData.minPrice,
@@ -146,16 +101,10 @@ describe('Paynquiry', () => {
             submittedQuestionsCount: 0
         }
 
-        expect(toTon(accountContract.balance)).toBeCloseTo(MIN_ACCOUNT_BALANCE, 1);
-        expect(await getAccountPrice(accountContract)).toBe(toNano('10'));
+        expect(toTon((await blockchain.getContract(accountContractAddr)).balance)).toBeCloseTo(MIN_ACCOUNT_BALANCE, 1);
+        expect(await accountContract.getPrice()).toBe(toNano('10'));
+        expect(actualFullData2).toStrictEqual(expectedFullData)
     });
-
-    async function getAccountPrice(account: SmartContract) {
-        let getRes = (await account.get('get_price')).stackReader;
-        let price = getRes.readBigNumber();
-
-        return price;
-    }
 
     async function getQuestionAddrFromRef(questionRef: SmartContract) {
         let getRes = (await questionRef.get('get_question_addr')).stackReader;
@@ -166,26 +115,26 @@ describe('Paynquiry', () => {
         let time = Math.floor(Date.now() / 1000);
         blockchain.now = time;
 
-        let account = await createNewAccount();
+        let account = await createNewAccount('user-1');
 
         expect(await account.getNextId()).toBe(0n);
         let user = await blockchain.treasury('user-2');
-        await blockchain.sendMessage(
-            internal({
-                from: user.address,
-                to: account.address,
-                value: toNano('10.6'),
-                body: beginCell()
-                    .storeUint(BigInt("0x28b1e47a"), 32)
-                    .storeRef(beginCell().storeStringTail('test content').endCell())
-                    .endCell(),
-            }),
-        );
+        await user.send({
+            to: account.address,
+            value: toNano('10.6'),
+            body: beginCell()
+                .storeUint(BigInt("0x28b1e47a"), 32)
+                .storeRef(beginCell().storeStringTail('test content').endCell())
+                .endCell(),
+        })
 
-        let submitterAccountAddr = await paynquiry.getAccountAddress(user.address);
+        let submitterAccountAddr = Account.createFromConfig({
+            owner: user.address,
+            serviceOwner: deployer.address}, accountCode).address
         let submitterAccountContract = blockchain.openContract(Account.createFromAddress(submitterAccountAddr));
 
         expect(await account.getNextId()).toBe(1n);
+
         expect(await submitterAccountContract.getNextSubmittedQuestionId()).toBe(1n);
 
         let questionContractAddr = await account.getQuestionAccAddr(0);
@@ -272,14 +221,6 @@ describe('Paynquiry', () => {
             to: questionAddr,
             value: amount,
             body: beginCell().storeUint(BigInt("0xfda8c6e0"), 32).storeRef(beginCell().storeStringTail(replyContent).endCell()).endCell(),
-        });
-    }
-
-    async function withdraw(sender: SandboxContract<TreasuryContract>, appContractAddr: Address = paynquiry.address) {
-        return await sender.send({
-            to: appContractAddr,
-            value: toNano('0.3'),
-            body: beginCell().storeUint(BigInt("0xa17c9cd6"), 32).storeUint(123, 64).endCell(),
         });
     }
 
@@ -387,12 +328,12 @@ describe('Paynquiry', () => {
         expect(await account.getPrice()).toBe(toNano(15))
     });
 
-    async function getRootBalance() {
-        return (await blockchain.getContract(paynquiry.address)).balance;
-    }
-
     function toTon(amount: bigint) {
         return parseFloat(fromNano(amount));
+    }
+
+    async function getRootBalance() {
+        return deployer.getBalance()
     }
 
     it('should send reward and service fee on reply', async () => {
@@ -465,16 +406,12 @@ describe('Paynquiry', () => {
         await submitQuestion(user, account.address, toNano('200'));
         let questionContractAddr = await account.getQuestionAccAddr(0);
 
+        let appOwnerBalanceBeforeReply = await deployer.getBalance();
         await replyToQuestion(accountOwner, questionContractAddr);
-        let appOwnerBalanceBeforeWithdraw = await deployer.getBalance();
-        await withdraw(deployer);
 
         let appOwnerBalance = await deployer.getBalance();
-        let appBalance = await getRootBalance();
 
-        //0.5 - initial balance of root
-        expect(toTon(appOwnerBalance - appOwnerBalanceBeforeWithdraw)).toBeCloseTo(10 + (0.5 - MIN_ROOT_BALANCE), 1); //10=200*5/100
-        expect(toTon(appBalance)).toBeCloseTo(MIN_ROOT_BALANCE);
+        expect(toTon(appOwnerBalance - appOwnerBalanceBeforeReply)).toBeCloseTo(10, 1); //10=200*5/100
     });
 
     it('submit multiple questions from one account. counterpart user account does not exist', async () => {
@@ -493,7 +430,10 @@ describe('Paynquiry', () => {
             await submitQuestion(user, account2.address, toNano('20'), `question 2 ${i}`);
         }
 
-        let userAccount = await paynquiry.getAccount(user.address);
+        let userAccount = blockchain.openContract(Account.createFromConfig({
+            owner: user.address,
+            serviceOwner: deployer.address
+        }, accountCode))//await paynquiry.getAccount(user.address);
         expect(await userAccount.getNextSubmittedQuestionId()).toBe(10n);
 
         for (let i = 0; i < 5; i++) {
@@ -530,24 +470,13 @@ describe('Paynquiry', () => {
     it('long running test', async () => {
         let blockchain = await Blockchain.create();
         let appOwnerUser = await blockchain.treasury('app-owner', { balance: toNano('50') });
-        let appContract = blockchain.openContract(
-            Paynquiry.createFromConfig(
-                {
-                    accountCode,
-                    questionCode,
-                    questionRefCode,
-                },
-                rootCode,
-            ),
-        );
-        await appContract.sendDeploy(appOwnerUser.getSender(), toNano('0.5'));
         let accounts = 3;
         let questionsPerAccount = 11;
         let amount = 120;
         for (let i = 0; i < accounts; i++) {
             let accountUsername = `account-${i}`;
             let accountOwnerUser = await blockchain.treasury(accountUsername);
-            let accountContract = await createNewAccount2(blockchain, appContract, accountOwnerUser, toNano('100'));
+            let accountContract = await createNewAccount2(blockchain, accountOwnerUser, appOwnerUser.address, toNano('100'));
 
             for (let j = 0; j < questionsPerAccount; j++) {
                 let userName = `user-${i}-${j}`;
@@ -558,10 +487,9 @@ describe('Paynquiry', () => {
             }
         }
 
-        await withdraw(appOwnerUser, appContract.address);
         let actualAppOwnerBalance = await appOwnerUser.getBalance();
 
-        expect(toTon(actualAppOwnerBalance) - 50 - MIN_ROOT_BALANCE).toBeCloseTo(
+        expect(toTon(actualAppOwnerBalance) - 50).toBeCloseTo(
             accounts * questionsPerAccount * amount * (5 / 100),
             0,
         );
@@ -570,22 +498,12 @@ describe('Paynquiry', () => {
     it('many questions to one account', async () => {
         let blockchain = await Blockchain.create();
         let appOwnerUser = await blockchain.treasury('app-owner', { balance: toNano('50') });
-        let appContract = blockchain.openContract(
-            Paynquiry.createFromConfig(
-                {
-                    accountCode,
-                    questionCode,
-                    questionRefCode,
-                },
-                rootCode,
-            ),
-        );
-        await appContract.sendDeploy(appOwnerUser.getSender(), toNano('0.5'));
+
         let questionsPerAccount = 23;
         let amount = 100;
         let accountUsername = `account-i-11`;
         let accountOwnerUser = await blockchain.treasury(accountUsername);
-        let accountContract = await createNewAccount2(blockchain, appContract, accountOwnerUser, toNano('100'));
+        let accountContract = await createNewAccount2(blockchain, accountOwnerUser, appOwnerUser.address, toNano('100'));
 
         for (let j = 0; j < questionsPerAccount; j++) {
             let userName = `user-i-1-${j}`;
@@ -602,72 +520,51 @@ describe('Paynquiry', () => {
         for (let j = 0; j < questionsPerAccount; j++) {
             let userName = `user-i-1-${j}`;
             let user = await blockchain.treasury(userName, { balance: toNano('2000') });
-            let account = await appContract.getAccount(user.address)
+            let account = blockchain.openContract(Account.createFromConfig(
+                {
+                    owner: user.address,
+                    serviceOwner: appOwnerUser.address
+                }, accountCode))
             let fullData = await account.getAllData()
             expect(fullData.submittedQuestionsCount).toBe(1);
             expect(fullData.assignedQuestionsCount).toBe(0);
         }
 
-        await withdraw(appOwnerUser, appContract.address);
         let actualAppOwnerBalance = await appOwnerUser.getBalance();
-        expect(toTon(actualAppOwnerBalance) - 50 - MIN_ROOT_BALANCE).toBeCloseTo(
+        expect(toTon(actualAppOwnerBalance) - 50).toBeCloseTo(
             questionsPerAccount * amount * (5 / 100),
             0,
         );
     });
 
-    it('account storage fee should be around 0.03 TON/year', async () => {
-        let blockchain = await Blockchain.create();
+    it('account storage fee should be around 0.02 TON/year', async () => {
         const time1 = Math.floor(Date.now() / 1000);
         const time2 = time1 + 365 * 24 * 60 * 60;
 
         blockchain.now = time1;
-        let appOwnerUser = await blockchain.treasury('app-owner-2', { balance: toNano('50') });
-        let appContract = blockchain.openContract(
-            Paynquiry.createFromConfig(
-                {
-                    accountCode,
-                    questionCode,
-                    questionRefCode,
-                },
-                rootCode,
-            ),
-        );
-        await appContract.sendDeploy(appOwnerUser.getSender(), toNano('0.5'));
+        let account = await createNewAccount('my-test-user')
         blockchain.now = time2;
+        let otherUser = await blockchain.treasury('other-user')
 
-        let res = await blockchain.sendMessage(
-            internal({
-                from: appOwnerUser.address,
-                to: appContract.address,
-                value: toNano('0.05'),
-            }),
-        );
+        let res = await blockchain.sendMessage(internal({
+            from: otherUser.address,
+            to: account.address,
+            value: toNano(0.03)
+        }))
         // @ts-ignore
-        expect(toTon(res.transactions[0].description.storagePhase?.storageFeesCollected)).toBeCloseTo(0.03);
+        expect(toTon(res.transactions[0].description.storagePhase?.storageFeesCollected)).toBeCloseTo(0.02);
     });
 
-    it('question storage fee during one year should be around 0.03 TON', async () => {
+    it('question storage fee during one year should be around 0.002 TON', async () => {
         let blockchain = await Blockchain.create();
         const time1 = Math.floor(Date.now() / 1000);
         const time2 = time1 + 365 * 24 * 60 * 60;
 
         let appOwnerUser = await blockchain.treasury('app-owner-21', { balance: toNano('50') });
-        let appContract = blockchain.openContract(
-            Paynquiry.createFromConfig(
-                {
-                    accountCode,
-                    questionCode,
-                    questionRefCode,
-                },
-                rootCode,
-            ),
-        );
 
         blockchain.now = time1;
-        await appContract.sendDeploy(appOwnerUser.getSender(), toNano('0.5'));
         const accountOwner = await blockchain.treasury('test-account-owner');
-        const accountContract = await createNewAccount2(blockchain, appContract, accountOwner, toNano(20));
+        const accountContract = await createNewAccount2(blockchain, accountOwner, appOwnerUser.address, toNano(20));
 
         const user = await blockchain.treasury('test-user');
         await submitQuestion(user, accountContract.address, toNano(22), randomBytes(280).toString('hex'));
