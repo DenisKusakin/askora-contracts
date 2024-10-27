@@ -1,4 +1,5 @@
 import {
+    address,
     Address,
     beginCell,
     Cell,
@@ -7,51 +8,35 @@ import {
     ContractProvider,
     Sender,
     SendMode,
-    TupleBuilder
+    TupleBuilder,
 } from '@ton/core';
 import { Question } from './Question';
 import { QuestionRef } from './QuestionRef';
 
 export type AccountConfig = {
-    serviceOwner: Address,
-    owner: Address
+    serviceOwner: Address;
+    owner: Address;
 };
 
 export function accountConfigToCell(config: AccountConfig): Cell {
-    return beginCell()
-        .storeAddress(config.owner)
-        .storeAddress(config.serviceOwner)
-        .endCell();
+    return beginCell().storeAddress(config.owner).storeAddress(config.serviceOwner).endCell();
 }
 
 export class Account implements Contract {
-    constructor(readonly address: Address, readonly init?: { code: Cell; data: Cell }) {}
+    constructor(
+        readonly address: Address,
+        readonly init?: {
+            code: Cell;
+            data: Cell;
+        }
+    ) {}
 
     static createFromAddress(address: Address) {
         return new Account(address);
     }
 
-    static createFromConfig(config: AccountConfig, code: Cell, workchain = 0) {
-        const data = accountConfigToCell(config);
-        const init = { code, data };
-        return new Account(contractAddress(workchain, init), init);
-    }
-
-    async sendDeploy(provider: ContractProvider, via: Sender, value: bigint, conf: {minPrice: bigint, questionCode: Cell, questionRefCode: Cell}) {
-        await provider.internal(via, {
-            value,
-            sendMode: SendMode.PAY_GAS_SEPARATELY,
-            body: beginCell()
-                .storeUint(BigInt("0x3922d770"), 32)
-                .storeCoins(conf.minPrice)
-                .storeRef(conf.questionCode)
-                .storeRef(conf.questionRefCode)
-                .endCell(),
-        });
-    }
-
     async getNextId(provider: ContractProvider) {
-        let source = (await provider.get("get_next_id", [])).stack;
+        let source = (await provider.get('get_next_id', [])).stack;
 
         return source.readBigNumber();
     }
@@ -70,9 +55,9 @@ export class Account implements Contract {
         return getRes.readAddress();
     }
 
-    async getPrice(provider: ContractProvider){
+    async getPrice(provider: ContractProvider) {
         let getRes = (await provider.get('get_price', [])).stack;
-        let price = getRes.readBigNumber()
+        let price = getRes.readBigNumber();
 
         return price;
     }
@@ -86,8 +71,11 @@ export class Account implements Contract {
         let submittedQuestionsCount = rootCell.loadUint(32);
 
         return {
-            owner, minPrice, assignedQuestionsCount, submittedQuestionsCount
-        }
+            owner,
+            minPrice,
+            assignedQuestionsCount,
+            submittedQuestionsCount,
+        };
     }
 
     async getQuestionAccAddr(provider: ContractProvider, id: number) {
@@ -97,12 +85,12 @@ export class Account implements Contract {
         return getRes.readAddress();
     }
 
-    async getQuestion(provider: ContractProvider, id: number){
+    async getQuestion(provider: ContractProvider, id: number) {
         let addr = await this.getQuestionAccAddr(provider, id);
         return provider.open(Question.createFromAddress(addr));
     }
 
-    async getQuestionRef(provider: ContractProvider, id: number){
+    async getQuestionRef(provider: ContractProvider, id: number) {
         let addr = await this.getQuestionRefAddress(provider, id);
         return provider.open(QuestionRef.createFromAddress(addr));
     }

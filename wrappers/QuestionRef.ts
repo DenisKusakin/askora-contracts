@@ -1,8 +1,8 @@
-import { Address, Contract, ContractProvider } from '@ton/core';
+import { Address, Cell, Contract, ContractProvider } from '@ton/core';
 import { Question } from './Question';
 
 export class QuestionRef implements Contract {
-    constructor(readonly address: Address) {
+    constructor(readonly address: Address, readonly init?: { code: Cell; data: Cell }) {
     }
 
     static createFromAddress(address: Address) {

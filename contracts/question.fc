@@ -7,39 +7,38 @@ const int fw_fee = TON_STEP;
 const int service_fee_percent = 5; ;;5%
 const int max_valid_seconds = 7 * 24 * 60 * 60; ;;7 days
 
-(slice, int, cell, slice, slice, slice, slice, int, int, cell, int) load_data() impure {
+(slice, int, cell, slice, slice, slice, int, int, cell, int, int) load_data() impure {
     slice ds = get_data().begin_parse();
-    var parent_addr = ds~load_msg_addr();
+    var owning_account_addr = ds~load_msg_addr();
     var id = ds~load_uint(32);
     if (ds.slice_bits() == 0) {
-        return (parent_addr, id, null(), null(), null(), null(), null(), false, false, null(), null());
+        return (owning_account_addr, id, null(), null(), null(), null(), false, false, null(), null(), null());
     } else {
         slice submitter_addr = ds~load_msg_addr();
-        slice account_addr = ds~load_msg_addr();
         slice add_addrs = ds~load_ref().begin_parse();
         cell content = add_addrs~load_ref();
         slice owner_addr = add_addrs~load_msg_addr();
         cell reply_content = add_addrs~load_ref();
 
-        return (parent_addr, id, content, submitter_addr, account_addr, owner_addr,
-            add_addrs~load_msg_addr(), ds~load_int(32), ds~load_int(32), reply_content, add_addrs~load_int(32));
+        return (owning_account_addr, id, content, submitter_addr, owner_addr,
+            add_addrs~load_msg_addr(), ds~load_int(32), ds~load_int(32), reply_content, add_addrs~load_int(32), add_addrs~load_coins());
     }
 }
 
-() store_data(slice parent_addr, int id, cell content, slice submitter_addr, slice account_addr, slice owner_addr, slice service_fee_addr, int is_closed, int is_rejected, cell reply_content, int created_at) impure {
+() store_data(slice owning_account_addr, int id, cell content, slice submitter_addr, slice owner_addr, slice service_fee_addr, int is_closed, int is_rejected, cell reply_content, int created_at, int min_price) impure {
     cell add_addrs = begin_cell()
         .store_slice(owner_addr)
         .store_slice(service_fee_addr)
         .store_ref(content)
         .store_ref(reply_content)
         .store_int(created_at, 32)
+        .store_coins(min_price)
         .end_cell();
 
     set_data(begin_cell()
-        .store_slice(parent_addr)
+        .store_slice(owning_account_addr)
         .store_uint(id, 32)
         .store_slice(submitter_addr)
-        .store_slice(account_addr)
         .store_ref(add_addrs)
         .store_int(is_closed, 32)
         .store_int(is_rejected, 32)
@@ -47,62 +46,18 @@ const int max_valid_seconds = 7 * 24 * 60 * 60; ;;7 days
     );
 }
 
-int get_is_closed() method_id {
-    (_, _, _, _, _, _, _, int is_closed, _, _, _) = load_data();
-    return is_closed;
-}
-
-int get_is_rejected() method_id {
-    (_, _, _, _, _, _, _, _, int is_rejected, _, _) = load_data();
-
-    return is_rejected;
-}
-
-cell get_content() method_id {
-    (_, _, cell content, _, _, _, _, _, _, _, _) = load_data();
-    return content;
-}
-
-
-slice get_submitter_addr() method_id {
-    (slice parent_addr, int id, cell content, slice submitter_addr,
-        slice account_addr, slice owner_addr_s,
-        slice service_fee_addr, int is_closed, int is_rejected, _, _) = load_data();
-
-    return submitter_addr;
-}
-
-slice get_owner_addr() method_id {
-    (slice parent_addr, int id, cell content, slice submitter_addr,
-        slice account_addr, slice owner_addr_s,
-        slice service_fee_addr, int is_closed, int is_rejected, _, _) = load_data();
-
-    return owner_addr_s;
-}
-
-cell get_reply_content() method_id {
-    (_, _, _, _, _, _, _, _, _, cell reply_content, _) = load_data();
-
-    return reply_content;
-}
-
-int get_created_at() method_id {
-    (_, _, _, _, _, _, _, _, _, _, int created_at) = load_data();
-
-    return created_at;
-}
-
 cell get_all_data() method_id {
-    (slice parent_addr, int id, cell content, slice submitter_addr, slice account_addr,
+    (slice owning_account_addr, int id, cell content, slice submitter_addr,
         slice owner_addr_s, slice service_fee_addr,
-        int is_closed, int is_rejected, cell reply_content, int created_at) = load_data();
+        int is_closed, int is_rejected, cell reply_content, int created_at, int min_price) = load_data();
     cell response = begin_cell()
         .store_ref(
             begin_cell()
                 .store_uint(id, 32)
-                .store_uint(is_closed, 1)
-                .store_uint(is_rejected, 1)
+                .store_int(is_closed, 1)
+                .store_int(is_rejected, 1)
                 .store_uint(created_at, 32)
+                .store_coins(min_price)
                 .end_cell()
         )
         .store_ref(
@@ -114,7 +69,8 @@ cell get_all_data() method_id {
         .store_ref(
             begin_cell()
                 .store_slice(submitter_addr)
-                .store_slice(account_addr)
+                .store_slice(owning_account_addr)
+                .store_slice(owner_addr_s)
                 .end_cell()
         )
         .end_cell();
@@ -128,6 +84,31 @@ cell get_all_data() method_id {
         .store_coins(amount)
         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
         .store_uint(op, 32);
+
+    send_raw_message(msg.end_cell(), 1);
+}
+
+() send_reward(slice addr, int amount) impure {
+    slice comment = "askora reward";
+    var msg = begin_cell()
+        .store_uint(0x10, 6)
+        .store_slice(addr)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(0, 32)
+        .store_slice(comment);
+
+    send_raw_message(msg.end_cell(), 1);
+}
+
+() send_coins_with_comment(slice addr, int amount, slice comment) impure {
+    var msg = begin_cell()
+        .store_uint(0x10, 6)
+        .store_slice(addr)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(0, 32)
+        .store_slice(comment);
 
     send_raw_message(msg.end_cell(), 1);
 }
@@ -153,23 +134,24 @@ cell get_all_data() method_id {
     }
 
     slice sender_addr = cs~load_msg_addr();
-    (slice parent_addr, int id, cell content, slice submitter_addr,
-        slice account_addr, slice owner_addr_s, slice service_fee_addr,
-        int is_closed, int is_rejected, _, int created_at) = load_data();
+    (slice owning_account_addr, int id, cell content, slice submitter_addr, slice owner_addr_s, slice service_fee_addr,
+        int is_closed, int is_rejected, _, int created_at, int min_price) = load_data();
 
     int op = in_msg_body~load_uint(32);
-    if (op == op::deploy_question & null?(account_addr)) {
+    if (op == op::deploy_question) {
+        throw_unless(403, equal_slices(owning_account_addr, sender_addr));
         cell content = in_msg_body~load_ref();
         slice submitter_addr_from_msg = in_msg_body~load_msg_addr();
         slice ref = in_msg_body~load_ref().begin_parse();
         slice owner_addr = ref~load_msg_addr();
         slice service_fee_addr_from_msg = ref~load_msg_addr();
+        int price = ref~load_coins();
         int current_time = now();
         store_data(
-            parent_addr, id, content, submitter_addr_from_msg,
-            sender_addr, owner_addr, service_fee_addr_from_msg,
+            owning_account_addr, id, content, submitter_addr_from_msg,
+            owner_addr, service_fee_addr_from_msg,
             false, false,
-            begin_cell().end_cell(), current_time
+            begin_cell().end_cell(), current_time, price
         );
         return ();
     }
@@ -177,32 +159,33 @@ cell get_all_data() method_id {
         throw_unless(403, equal_slices(sender_addr, owner_addr_s));
         cell reply_content = in_msg_body~load_ref();
         store_data(
-            parent_addr, id, content, submitter_addr,
-            sender_addr, owner_addr_s,
-            service_fee_addr, true, false, reply_content, created_at
+            owning_account_addr, id, content, submitter_addr, owner_addr_s,
+            service_fee_addr, true, false, reply_content, created_at, min_price
         );
-        int amout_to_share = my_balance - min_account_balance;
-        int service_fee = muldiv(amout_to_share, service_fee_percent, 100);
-        int reply_reward = amout_to_share - service_fee;
+        ;; TODO: handle case when remaining balance < min_price
+        int reply_reward = min_price;
+        int service_fee = my_balance - min_account_balance - reply_reward;
 
-        send_coins(owner_addr_s, reply_reward, op::reply_reward);
-        send_service_fee(service_fee_addr, service_fee, op::service_fee);
+        if (reply_reward > 0) {
+            send_reward(owner_addr_s, reply_reward);
+            send_service_fee(service_fee_addr, service_fee, op::service_fee);
+        }
 
         return ();
     }
     if (op == op::reject & (~ is_closed)) {
         throw_unless(403, equal_slices(sender_addr, owner_addr_s));
         store_data(
-            parent_addr, id, content, submitter_addr,
-            sender_addr, owner_addr_s,
+            owning_account_addr, id, content, submitter_addr,
+            owner_addr_s,
             service_fee_addr, true, true,
-            begin_cell().end_cell(), created_at
+            begin_cell().end_cell(), created_at, min_price
         );
 
         int return_to_owner_amount = msg_value;
         int amount_to_return = my_balance - return_to_owner_amount - min_account_balance;
 
-        send_coins(submitter_addr, amount_to_return, op::return_on_reject);
+        send_coins_with_comment(submitter_addr, amount_to_return, "askora. your question rejected");
         send_coins(owner_addr_s, return_to_owner_amount, op::excess_return);
 
         return ();
@@ -212,10 +195,9 @@ cell get_all_data() method_id {
         int valid_until = created_at + max_valid_seconds;
         throw_if(403, valid_until >= now());
         store_data(
-            parent_addr, id, content, submitter_addr,
-            sender_addr, owner_addr_s,
+            owning_account_addr, id, content, submitter_addr, owner_addr_s,
             service_fee_addr, true, false,
-            begin_cell().end_cell(), created_at
+            begin_cell().end_cell(), created_at, min_price
         );
 
         send_coins(submitter_addr, my_balance - min_account_balance, op::return_on_reject);

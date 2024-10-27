@@ -3,18 +3,16 @@
 #include "imports/stdlib.fc";
 
 const int min_account_balance = 3 * TON_STEP;
+const int min_question_balance = TON_STEP;
 const int fw_fee = TON_STEP;
 
 (slice, slice, cell, cell, int, int, int) load_data() inline {
     slice ds = get_data().begin_parse();
-    var (owner, service_owner_addr) = (ds~load_msg_addr(), ds~load_msg_addr());
+    var (owner, service_owner_addr, question_code, question_ref_code) = (ds~load_msg_addr(), ds~load_msg_addr(), ds~load_ref(), ds~load_ref());
     if (ds.slice_bits() > 0) {
-        cell question_code = ds~load_ref();
-        cell question_ref_code = ds~load_ref();
-
         return (owner, service_owner_addr, question_code, question_ref_code, ds~load_uint(32), ds~load_uint(32), ds~load_coins());
     } else {
-        return (owner, service_owner_addr, null(), null(), null(), null(), null());
+        return (owner, service_owner_addr, question_code, question_ref_code, null(), null(), null());
     }
 }
 
@@ -54,7 +52,7 @@ slice calculate_question_adddress(cell state_init) {
         .begin_parse();
 }
 
-slice deploy_question(cell content, slice submitter_addr, slice owner_addr, slice service_owner_addr, int id, cell question_code, int amount) impure {
+slice deploy_question(cell content, slice submitter_addr, slice owner_addr, slice service_owner_addr, int id, cell question_code, int amount, int price) impure {
     cell state_init = calculate_question_state_init(my_address(), id, question_code);
     slice question_address = calculate_question_adddress(state_init);
     var msg = begin_cell()
@@ -70,6 +68,7 @@ slice deploy_question(cell content, slice submitter_addr, slice owner_addr, slic
             .store_ref(begin_cell()
                 .store_slice(owner_addr)
                 .store_slice(service_owner_addr)
+                .store_coins(price)
                 .end_cell())
             .end_cell()
         );
@@ -114,10 +113,12 @@ int get_price() method_id {
     send_raw_message(msg.end_cell(), 1);
 }
 
-cell calculate_account_state_init(slice owner_addr, slice service_owner_addr, cell account_code) {
+cell calculate_account_state_init(slice owner_addr, slice service_owner_addr, cell account_code, cell question_code, cell question_ref_code) {
     cell data = begin_cell()
         .store_slice(owner_addr)
         .store_slice(service_owner_addr)
+        .store_ref(question_code)
+        .store_ref(question_ref_code)
         .end_cell();
 
     return begin_cell()
@@ -132,7 +133,6 @@ cell calculate_question_ref_state_init(cell question_ref_code, slice parent_acco
     cell data = begin_cell()
         .store_slice(parent_account_addr)
         .store_uint(id, 32)
-        .store_ref(question_ref_code)
         .end_cell();
 
     return begin_cell()
@@ -163,14 +163,12 @@ slice calculate_question_ref_adddress(cell state_init) {
 slice get_submitted_question_address(int id) method_id {
     (_, _, _, cell question_ref_code, _, _, _) = load_data();
     cell state_init = calculate_question_ref_state_init(question_ref_code, my_address(), id);
-
     return calculate_question_ref_adddress(state_init);
 }
 
 cell get_all_data() method_id {
-    (slice owner, _, _, _,
+    (slice owner, slice service_owner, cell question_code, cell question_ref_code,
         int next_question_idx, int next_submitted_question_idx, int min_price) = load_data();
-
     return begin_cell()
         .store_slice(owner)
         .store_coins(min_price)
@@ -218,10 +216,8 @@ cell get_all_data() method_id {
     if (op == op::deploy_account & null?(next_question_idx)) {
         ;; throw_unless(403, equal_slices(sender_addr, service_owner_addr));
         int min_price_from_msg = in_msg_body~load_coins();
-        cell question_code_from_msg = in_msg_body~load_ref();
-        cell question_ref_code_from_msg = in_msg_body~load_ref();
 
-        store_data(service_owner_addr, owner, question_code_from_msg, question_ref_code_from_msg, 0, 0, min_price_from_msg);
+        store_data(service_owner_addr, owner, question_code, question_ref_code, 0, 0, min_price_from_msg);
         if (my_balance > min_account_balance) {
             int excess_amount = min(my_balance - min_account_balance - fw_fee, msg_value - fw_fee);
             send_excess(owner, excess_amount);
@@ -238,22 +234,21 @@ cell get_all_data() method_id {
         return ();
     }
     if (op == op::create_question) {
-        ~strdump("create question");
         throw_if(403, equal_slices(sender_addr, owner));
-        int to_share = msg_value;
-        if (my_balance - msg_value < min_account_balance) {
-            to_share = my_balance - min_account_balance;
-        }
 
-        int notification_amount = min_account_balance + fw_fee;
-        if (to_share <= min_price + notification_amount) {
+        int service_fee = muldiv(min_price, 5, 100);
+        int min_notification_amount = min_account_balance + fw_fee;
+        int question_contract_amount = min_price + service_fee + min_question_balance;
+
+        if (msg_value < question_contract_amount + min_notification_amount) {
             throw(405);
         }
+
         cell content = in_msg_body~load_ref();
         slice question_contract_addr = deploy_question(
             content, sender_addr, owner,
             service_owner_addr, next_question_idx, question_code,
-            to_share - notification_amount
+            question_contract_amount, min_price
         );
         store_data(service_owner_addr, owner, question_code, question_ref_code,
             next_question_idx + 1, next_submitted_question_idx, min_price);
@@ -261,33 +256,34 @@ cell get_all_data() method_id {
         ;; Notify other account
         slice q_sender_addr = sender_addr;
         cell sender_account_state_init = calculate_account_state_init(
-            q_sender_addr, service_owner_addr, my_code());
+            q_sender_addr, service_owner_addr, my_code(), question_code, question_ref_code);
 
         slice sender_account_addr = calculate_account_adddress(sender_account_state_init);
+        ;; calculate remaining value
+        int msg_remaining_value = msg_value - question_contract_amount;
+        if (my_balance - msg_value < min_account_balance) {
+            msg_remaining_value = msg_remaining_value - (min_account_balance - (my_balance - msg_value));
+        }
+
         var notify_msg = begin_cell()
             .store_uint(0x18, 6)
             .store_slice(sender_account_addr)
-            .store_coins(notification_amount)
+            .store_coins(msg_remaining_value)
             .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
             .store_ref(sender_account_state_init)
             .store_ref(begin_cell()
                 .store_uint(op::question_deployed, 32)
-                .store_ref(question_code)
-                .store_ref(question_ref_code)
                 .store_slice(question_contract_addr)
                 .end_cell()
             );
-        send_raw_message(notify_msg.end_cell(), 1);
-        ~strdump("create question after");
+        send_raw_message(notify_msg.end_cell(), 0);
+
         return ();
     }
     if (op == op::question_deployed) {
-        ~strdump("question deployed");
         var next_question_idx_2 = next_question_idx;
         var next_submitted_question_idx_2 = next_submitted_question_idx;
         var min_price_2 = min_price;
-        var question_code_2 = question_code;
-        var question_ref_code_2 = question_ref_code;
         if (null?(next_question_idx_2)) {
             next_question_idx_2 = 0;
         }
@@ -297,20 +293,27 @@ cell get_all_data() method_id {
         if (null?(min_price_2)) {
             min_price_2 = 0;
         }
-        if (null?(question_code_2)) {
-            question_code_2 = in_msg_body~load_ref();
-            question_ref_code_2 = in_msg_body~load_ref();
-        }
-        ;;;-------------------
         slice question_addr_from_msg = in_msg_body~load_msg_addr();
         deploy_question_ref(
-            question_ref_code_2, my_address(),
+            question_ref_code, my_address(),
             next_submitted_question_idx_2, question_addr_from_msg);
         store_data(
-            service_owner_addr, owner, question_code_2,
-            question_ref_code_2,next_question_idx_2,
+            service_owner_addr, owner, question_code,
+            question_ref_code, next_question_idx_2,
             next_submitted_question_idx_2 + 1, min_price_2);
-        ~strdump("question deployed after");
+
+        ;; return excess to the account owner
+        if (my_balance > min_account_balance) {
+            var excess_msg = begin_cell()
+                .store_uint(0x10, 6)
+                .store_slice(owner)
+                .store_coins(my_balance - min_account_balance)
+                .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+                .store_uint(op, 32)
+                .end_cell();
+            send_raw_message(excess_msg, 0);
+        }
+
         return ();
     }
     throw(404);
