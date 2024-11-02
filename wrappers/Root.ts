@@ -6,7 +6,7 @@ import {
     contractAddress,
     ContractProvider,
     Sender,
-    SendMode,
+    SendMode, toNano,
     TupleBuilder
 } from '@ton/core';
 import { Account } from './Account';
@@ -44,6 +44,16 @@ export class Root implements Contract {
             sendMode: SendMode.PAY_GAS_SEPARATELY,
             body: beginCell().storeUint(BigInt("0x1783f31b"), 32).storeUint(123, 64).endCell(),
         });
+    }
+
+    async sendWithdrawSafe(provider: ContractProvider, via: Sender){
+        await provider.internal(via, {
+            value: toNano(0.01),
+            body: beginCell()
+                .storeUint(BigInt('0xa17c9cd6'), 32)
+                .storeUint(123, 64)
+                .endCell()
+        })
     }
 
     async getAccountAddress(provider: ContractProvider, owner: Address) {

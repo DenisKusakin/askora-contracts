@@ -27,6 +27,7 @@ describe('All tests', () => {
     beforeAll(async () => {
         rootCode = await compile('root');
         accountCode = await compile('account');
+        console.log("Code", accountCode.toString())
         questionCode = await compile('question');
         questionRefCode = await compile('question-ref');
     });
@@ -125,8 +126,9 @@ describe('All tests', () => {
         let account = await createNewAccount('user-1');
 
         expect(await account.getNextId()).toBe(0n);
+
         let user = await blockchain.treasury('user-2');
-        let res = await user.send({
+        await user.send({
             to: account.address,
             value: toNano('10.6'),
             body: beginCell()
@@ -134,8 +136,6 @@ describe('All tests', () => {
                 .storeRef(beginCell().storeStringTail('test content').endCell())
                 .endCell(),
         });
-        // console.log(res.transactions);
-        printTransactionFees(res.transactions);
 
         let submitterAccountContract = await root.getAccount(user.address);
 
@@ -146,7 +146,6 @@ describe('All tests', () => {
         let questionContractAddr = await account.getQuestionAccAddr(0);
         let questionRefAddr = await submitterAccountContract.getQuestionRefAddress(0);
         let questionRefContract = await blockchain.getContract(questionRefAddr);
-        console.log('Balance q', questionRefContract.accountState);
         let questionContractAddrFromSubmitterAccount = await getQuestionAddrFromRef(questionRefContract);
 
         expect(questionContractAddr.toRawString()).toBe(questionContractAddrFromSubmitterAccount.toRawString());
@@ -178,6 +177,96 @@ describe('All tests', () => {
 
         expect(actualQuestionFullData2).toStrictEqual(expectedQuestionFullData);
         expect(toTon((await blockchain.getContract(questionContract.address)).balance)).toBeCloseTo(10.5, 0);
+        expect(actualQuestionFullData.createdAt).toBe(time);
+    });
+
+    it('should create multiple questions', async () => {
+        let account = await createNewAccount('user-1');
+        expect(await account.getNextId()).toBe(0n);
+        await createNewAccount('user-2')
+        let user = await blockchain.treasury('user-2');
+        await user.send({
+            to: account.address,
+            value: toNano('10.6'),
+            body: beginCell()
+                .storeUint(BigInt('0x28b1e47a'), 32)
+                .storeRef(beginCell().storeStringTail('test content').endCell())
+                .endCell(),
+        });
+        await user.send({
+            to: account.address,
+            value: toNano('10.6'),
+            body: beginCell()
+                .storeUint(BigInt('0x28b1e47a'), 32)
+                .storeRef(beginCell().storeStringTail('test content').endCell())
+                .endCell(),
+        });
+
+        let submitterAccountContract = await root.getAccount(user.address);
+
+        expect(await account.getNextId()).toBe(2n);
+        expect(await submitterAccountContract.getNextSubmittedQuestionId()).toBe(2n);
+    });
+
+    it('should create cheap question', async () => {
+        let time = Math.floor(Date.now() / 1000);
+        blockchain.now = time;
+
+        let account = await createNewAccount('user-1', toNano(0.8));
+
+        expect(await account.getNextId()).toBe(0n);
+
+        await createNewAccount('user-2', toNano(2))
+        let user = await blockchain.treasury('user-2');
+        let res = await user.send({
+            to: account.address,
+            value: toNano(0.8 + 0.8*5/100 + 0.06),
+            body: beginCell()
+                .storeUint(BigInt('0x28b1e47a'), 32)
+                .storeRef(beginCell().storeStringTail('test content').endCell())
+                .endCell(),
+        });
+
+        let submitterAccountContract = await root.getAccount(user.address);
+
+        expect(await account.getNextId()).toBe(1n);
+
+        expect(await submitterAccountContract.getNextSubmittedQuestionId()).toBe(1n);
+
+        let questionContractAddr = await account.getQuestionAccAddr(0);
+        let questionRefAddr = await submitterAccountContract.getQuestionRefAddress(0);
+        let questionRefContract = await blockchain.getContract(questionRefAddr);
+        let questionContractAddrFromSubmitterAccount = await getQuestionAddrFromRef(questionRefContract);
+
+        expect(questionContractAddr.toRawString()).toBe(questionContractAddrFromSubmitterAccount.toRawString());
+
+        let questionContract = await account.getQuestion(0);
+        expect((await questionContract.getAllData()).content).toBe('test content');
+        expect((await questionContract.getAllData()).isClosed).toBe(false);
+        expect(toTon((await blockchain.getContract(questionContract.address)).balance)).toBeCloseTo(0.8 + 5*0.8/100 + MIN_QUESTION_BALANCE);
+
+        let actualQuestionFullData = await questionContract.getAllData();
+        let actualQuestionFullData2 = {
+            isClosed: actualQuestionFullData.isClosed,
+            isRejected: actualQuestionFullData.isRejected,
+            content: actualQuestionFullData.content,
+            replyContent: actualQuestionFullData.replyContent,
+            submitterAddr: actualQuestionFullData.submitterAddr.toRawString(),
+            accountAddr: actualQuestionFullData.accountAddr.toRawString(),
+            minPrice: actualQuestionFullData.minPrice
+        };
+        let expectedQuestionFullData = {
+            isClosed: false,
+            isRejected: false,
+            content: 'test content',
+            replyContent: '',
+            submitterAddr: user.address.toRawString(),
+            accountAddr: account.address.toRawString(),
+            minPrice: toNano(0.8)
+        };
+
+        expect(actualQuestionFullData2).toStrictEqual(expectedQuestionFullData);
+        expect(toTon((await blockchain.getContract(questionContract.address)).balance)).toBeCloseTo(0.8 + 5*0.8/100 + MIN_QUESTION_BALANCE);
         expect(actualQuestionFullData.createdAt).toBe(time);
     });
 
@@ -349,13 +438,39 @@ describe('All tests', () => {
         let accountUser = await blockchain.treasury('account-user');
 
         expect(await account.getPrice()).toBe(toNano(10));
-        let res = await accountUser.send({
+        await accountUser.send({
             to: account.address,
             value: toNano(0.01),
             body: beginCell().storeUint(BigInt('0xaaacc05b'), 32).storeCoins(toNano(15)).endCell(),
         });
         expect(await account.getPrice()).toBe(toNano(15));
     });
+
+    it('user still could receive and send questions after changing the price', async () => {
+        let senderUser = await blockchain.treasury('test-user')
+
+        let account = await createNewAccount('account-user', toNano('10'));
+        let accountUser = await blockchain.treasury('account-user');
+        let senderAccount = await root.getAccount(senderUser.address)
+
+        await submitQuestion(senderUser, account.address, toNano(20))
+        expect(await senderAccount.getNextSubmittedQuestionId()).toBe(1n);
+        expect(await account.getNextId()).toBe(1n);
+
+        await accountUser.send({
+            to: account.address,
+            value: toNano(0.01),
+            body: beginCell().storeUint(BigInt('0xaaacc05b'), 32).storeCoins(toNano(15)).endCell(),
+        });
+        //
+        await submitQuestion(senderUser, account.address, toNano(20))
+        expect(await senderAccount.getNextSubmittedQuestionId()).toBe(2n);
+        expect(await account.getNextId()).toBe(2n);
+
+        //Vice versa
+        await submitQuestion(accountUser, senderAccount.address, toNano(23))
+        expect(await account.getNextSubmittedQuestionId()).toBe(1n);
+    })
 
     function toTon(amount: bigint) {
         return parseFloat(fromNano(amount));
@@ -604,4 +719,15 @@ describe('All tests', () => {
         // @ts-ignore
         expect(toTon(res.transactions[0].description.storagePhase?.storageFeesCollected)).toBeCloseTo(0.002);
     });
+
+    // it('test', async () => {
+    //     let data = "te6ccgECGAEAAvEAApeAHM/JUPHRpQUCmAkEylt8EkIDboam6TnzILkFY2ePyRAQA/lC/dlJXUfkGXhWhvUlCgeWd7Kl5qMDR/IsUwcioIswAAAAAAAAABQgAQIBFP8A9KQT9LzyyAsDART/APSkE/S88sgLFQIBYgQFAgLNBgcAXaFlC+ACa5CgD54soBOeLKAJni2SC5GYL5mSC5GWPi2UAZQBlj6gB/QFk5GZmZmTAgEgCAkCASAREgIBIAoLAgEgDxAD4wB0NMDAXGwkl8E4PpAMPABbCIK0x8hghA3DUsCuo4jO18HNDRSMMcF8uGT1PpA1DDQ+kD6QPoAMPgjcHDIyUA08ALgghD9qMbgJLOwUiC64wIwghClxWa5I7OwUhC64wI5OoIQVhbFcgGzsBe64wJfCYAwNDgBzO1E0PpA0x8g10nAAJowbW1tbXBwbW1t4PpA1AHQ1PpA1PpABdIf0h8wBtIf+gAwEGgQZxBWEDUQJIABmMTI6UXLHBfLhkwbUMH9wUzhQRFHL8AIDggiYloChIaEhwgCbWfAEghC0GRfC8AaSXwTiAJAwMVFyxwXy4ZN/f8jJU1RQvPACUTKhggiYloChE40HmFza29yYS4geW91ciBxdWVzdGlvbiByZWplY3RlZIPAFghDoJolZ8AMAZCeCCAk6gKD4I77y0ZN/cMjJJBCKEHkQaAcQRgUQNEG7A/ACAYIImJaAoYIQlDEIpvADAFEyFAHzxZQBc8WF8wWzBLKH1j6AsnIUAbPFhTLHwHPFhPMyh/KH8ntVIAAtHCAEMjLBVAEzxZY+gISy2rLH8lx+wCACASATFAA5SAe3CAEMjLBVAFzxZQA/oCE8tqEssfyz/JcfsAgAVSL1hc2tvcmEgcmV3YXJkhwIIAQyMsFUAXPFlAD+gITy2rLHwHPFslx+wCAANxwIIAQyMsFUAXPFlAD+gITy2rLHwHPFslx+wCACAWIWFwAa0Gwx+kAwyAHPFsntVAARocYH2omh9IBh"
+    //     let cell = Cell.fromBase64(data)
+    //
+    //     let a = cell.beginParse()
+    //     let x1 = a.loadAddress()
+    //     let x2 = a.loadAddress()
+    //
+    //     console.log("Addrs", x1.toString(), x2.toString())
+    // })
 });
