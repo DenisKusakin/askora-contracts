@@ -3,6 +3,7 @@
 #include "imports/stdlib.fc";
 
 const int min_account_balance = 1 * TON_STEP;
+const int min_account_contract_balance = 3 * TON_STEP;
 
 (cell, cell, cell, slice) load_data() impure {
     slice ds = get_data().begin_parse();
@@ -49,15 +50,14 @@ slice calculate_account_adddress(cell state_init) {
         .begin_parse();
 }
 
-() deploy_account(slice owner, cell account_code, cell question_code, cell question_ref_code, int min_price) impure {
+() deploy_account(slice owner, cell account_code, cell question_code, cell question_ref_code, int min_price, int amount, int mode) impure {
     cell state_init = calculate_account_state_init(owner, account_code, question_code, question_ref_code);
     slice account_address = calculate_account_adddress(state_init);
-
 
     var msg = begin_cell()
         .store_uint(0x18, 6)
         .store_slice(account_address)
-        .store_coins(0)
+        .store_coins(amount)
         .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
         .store_ref(state_init)
         .store_ref(begin_cell()
@@ -66,7 +66,7 @@ slice calculate_account_adddress(cell state_init) {
             .end_cell()
         );
 
-    send_raw_message(msg.end_cell(), 64);
+    send_raw_message(msg.end_cell(), mode);
 }
 
 slice get_account_addr(slice owner) method_id {
@@ -92,6 +92,17 @@ cell get_account_code() method_id {
         .store_coins(amount)
         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
         .store_uint(op, 32);
+
+    send_raw_message(msg.end_cell(), 1);
+}
+
+() send_transaction_fees(slice addr, int amount) impure {
+    var msg = begin_cell()
+        .store_uint(0x10, 6)
+        .store_slice(addr)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(0, 32);
 
     send_raw_message(msg.end_cell(), 1);
 }
@@ -123,7 +134,14 @@ cell get_account_code() method_id {
     }
     if (op == op::create_account) {
         int min_price = in_msg_body~load_coins();
-        deploy_account(sender_addr, account_code, question_code, question_ref_code, min_price);
+        deploy_account(sender_addr, account_code, question_code, question_ref_code, min_price, 0, 64);
+        return ();
+    }
+    if (op == op::create_account_sponsored) {
+        throw_if(405, my_balance < min_account_balance + 2 * min_account_contract_balance + msg_value);
+        int min_price = in_msg_body~load_coins();
+        deploy_account(sender_addr, account_code, question_code, question_ref_code, min_price, min_account_contract_balance, 1);
+        send_transaction_fees(sender_addr, msg_value);
         return ();
     }
     if (op == op::service_fee) {

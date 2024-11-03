@@ -1,6 +1,7 @@
 ;; Root
 const int op::deploy_root = 0x1783f31b;
 const int op::create_account = 0x5f0ec1a3;
+const int op::create_account_sponsored = 0x74385f77;
 const int op::withdraw_safe = 0xa17c9cd6;
 const int op::paynquiry_withdrawal = 0x1f27c751;
 

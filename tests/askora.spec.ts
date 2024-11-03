@@ -6,7 +6,7 @@ import {
     SmartContract,
     TreasuryContract,
 } from '@ton/sandbox';
-import { Address, beginCell, Cell, fromNano, toNano } from '@ton/core';
+import { Address, beginCell, Cell, fromNano, SendMode, toNano } from '@ton/core';
 import '@ton/test-utils';
 import { compile } from '@ton/blueprint';
 import { randomBytes } from 'node:crypto';
@@ -18,6 +18,8 @@ const MIN_QUESTION_BALANCE = TON_STEP;
 const MIN_ACCOUNT_BALANCE = 3 * TON_STEP;
 const MIN_ROOT_BALANCE = TON_STEP;
 
+const INITIAL_ROOT_BALANCE = 0.5
+
 describe('All tests', () => {
     let rootCode: Cell;
     let accountCode: Cell;
@@ -27,7 +29,6 @@ describe('All tests', () => {
     beforeAll(async () => {
         rootCode = await compile('root');
         accountCode = await compile('account');
-        console.log("Code", accountCode.toString())
         questionCode = await compile('question');
         questionRefCode = await compile('question-ref');
     });
@@ -50,7 +51,7 @@ describe('All tests', () => {
                 rootCode,
             ),
         );
-        root.sendDeploy(deployer.getSender(), toNano(0.05));
+        root.sendDeploy(deployer.getSender(), toNano(INITIAL_ROOT_BALANCE));
     });
 
     async function createNewAccount(username: string | undefined = undefined, price: bigint = toNano('10')) {
@@ -565,7 +566,7 @@ describe('All tests', () => {
 
         //0.05 - initial root account balance, TON_STEP - min root balance
         //TODO: 0.1 is taken from reply, this should not be the case
-        expect(toTon(appOwnerBalance - appOwnerBalanceBeforeWithdraw)).toBeCloseTo(15*5/100 + 0.1 + (0.05 - MIN_ROOT_BALANCE), 1);
+        expect(toTon(appOwnerBalance - appOwnerBalanceBeforeWithdraw)).toBeCloseTo(15*5/100 + 0.1 + (INITIAL_ROOT_BALANCE - MIN_ROOT_BALANCE), 1);
     });
 
     it('submit multiple questions from one account. counterpart user account does not exist', async () => {
@@ -642,7 +643,8 @@ describe('All tests', () => {
 
         let actualAppOwnerBalance = await getRootBalance();
 
-        expect(toTon(actualAppOwnerBalance - initialBalance)).toBeCloseTo(
+        //TODO: Why -INITIAL_ROOT_BALANCE
+        expect(toTon(actualAppOwnerBalance - initialBalance) - INITIAL_ROOT_BALANCE).toBeCloseTo(
             accounts * questionsPerAccount * 100 * (5 / 100),
             0,
         );
@@ -678,7 +680,8 @@ describe('All tests', () => {
         }
 
         let actualAppOwnerBalance = await getRootBalance();
-        expect(toTon(actualAppOwnerBalance - initialBalance)).toBeCloseTo(questionsPerAccount * amount * (5 / 100), 0);
+        //TODO: why - INITIAL_ROOT_BALANCE
+        expect(toTon(actualAppOwnerBalance - initialBalance) - INITIAL_ROOT_BALANCE).toBeCloseTo(questionsPerAccount * amount * (5 / 100), 0);
     });
 
     it('account storage fee should be around 0.02 TON/year', async () => {
@@ -720,6 +723,40 @@ describe('All tests', () => {
         expect(toTon(res.transactions[0].description.storagePhase?.storageFeesCollected)).toBeCloseTo(0.002);
     });
 
+    it('account creation could be sponsored', async () => {
+        let user = await blockchain.treasury('user', {balance: toNano(10)});
+        await user.send({
+            value: toNano(0.5),
+            to: root.address,
+            body: beginCell()
+                .storeUint(BigInt('0x74385f77'), 32)
+                .storeUint(BigInt(123), 64)
+                .storeCoins(toNano(3.14))
+                .endCell(),
+            sendMode: SendMode.PAY_GAS_SEPARATELY
+        });
+        let account = await root.getAccount(user.address);
+        expect(await account.getPrice()).toBe(toNano(3.14))
+        expect(toTon(await user.getBalance())).toBeCloseTo(10)
+    })
+
+    it(`0.5 TON should be enough to sponsor creation of 10 accounts`, async () => {
+        for(let i = 0; i < 10; i++){
+            let user = await blockchain.treasury(`user-${i}`, {balance: toNano(10)});
+            await user.send({
+                value: toNano(0.5),
+                to: root.address,
+                body: beginCell()
+                    .storeUint(BigInt('0x74385f77'), 32)
+                    .storeUint(BigInt(123), 64)
+                    .storeCoins(toNano(3.14))
+                    .endCell()
+            });
+            let account = await root.getAccount(user.address);
+            expect(await account.getPrice()).toBe(toNano(3.14))
+            expect(toTon(await user.getBalance())).toBeCloseTo(10)
+        }
+    })
     // it('test', async () => {
     //     let data = "te6ccgECGAEAAvEAApeAHM/JUPHRpQUCmAkEylt8EkIDboam6TnzILkFY2ePyRAQA/lC/dlJXUfkGXhWhvUlCgeWd7Kl5qMDR/IsUwcioIswAAAAAAAAABQgAQIBFP8A9KQT9LzyyAsDART/APSkE/S88sgLFQIBYgQFAgLNBgcAXaFlC+ACa5CgD54soBOeLKAJni2SC5GYL5mSC5GWPi2UAZQBlj6gB/QFk5GZmZmTAgEgCAkCASAREgIBIAoLAgEgDxAD4wB0NMDAXGwkl8E4PpAMPABbCIK0x8hghA3DUsCuo4jO18HNDRSMMcF8uGT1PpA1DDQ+kD6QPoAMPgjcHDIyUA08ALgghD9qMbgJLOwUiC64wIwghClxWa5I7OwUhC64wI5OoIQVhbFcgGzsBe64wJfCYAwNDgBzO1E0PpA0x8g10nAAJowbW1tbXBwbW1t4PpA1AHQ1PpA1PpABdIf0h8wBtIf+gAwEGgQZxBWEDUQJIABmMTI6UXLHBfLhkwbUMH9wUzhQRFHL8AIDggiYloChIaEhwgCbWfAEghC0GRfC8AaSXwTiAJAwMVFyxwXy4ZN/f8jJU1RQvPACUTKhggiYloChE40HmFza29yYS4geW91ciBxdWVzdGlvbiByZWplY3RlZIPAFghDoJolZ8AMAZCeCCAk6gKD4I77y0ZN/cMjJJBCKEHkQaAcQRgUQNEG7A/ACAYIImJaAoYIQlDEIpvADAFEyFAHzxZQBc8WF8wWzBLKH1j6AsnIUAbPFhTLHwHPFhPMyh/KH8ntVIAAtHCAEMjLBVAEzxZY+gISy2rLH8lx+wCACASATFAA5SAe3CAEMjLBVAFzxZQA/oCE8tqEssfyz/JcfsAgAVSL1hc2tvcmEgcmV3YXJkhwIIAQyMsFUAXPFlAD+gITy2rLHwHPFslx+wCAANxwIIAQyMsFUAXPFlAD+gITy2rLHwHPFslx+wCACAWIWFwAa0Gwx+kAwyAHPFsntVAARocYH2omh9IBh"
     //     let cell = Cell.fromBase64(data)
