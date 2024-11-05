@@ -1,1 +1,4 @@
 const int TON_STEP = 10000000; ;;0.01 TON
+const int min_account_contract_balance = 3 * TON_STEP;
+const int min_question_contract_balance = TON_STEP;
+const int min_question_ref_contract_balance = TON_STEP;

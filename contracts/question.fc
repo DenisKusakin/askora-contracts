@@ -2,8 +2,6 @@
 #include "op-codes.fc";
 #include "imports/stdlib.fc";
 
-const int min_account_balance = TON_STEP;
-const int fw_fee = TON_STEP;
 const int service_fee_percent = 5; ;;5%
 const int max_valid_seconds = 7 * 24 * 60 * 60; ;;7 days
 
@@ -21,7 +19,7 @@ const int max_valid_seconds = 7 * 24 * 60 * 60; ;;7 days
         cell reply_content = add_addrs~load_ref();
 
         return (owning_account_addr, id, content, submitter_addr, owner_addr,
-            add_addrs~load_msg_addr(), ds~load_int(32), ds~load_int(32), reply_content, add_addrs~load_int(32), add_addrs~load_coins());
+            add_addrs~load_msg_addr(), ds~load_int(32), ds~load_int(32), reply_content, add_addrs~load_int(64), add_addrs~load_coins());
     }
 }
 
@@ -31,7 +29,7 @@ const int max_valid_seconds = 7 * 24 * 60 * 60; ;;7 days
         .store_slice(service_fee_addr)
         .store_ref(content)
         .store_ref(reply_content)
-        .store_int(created_at, 32)
+        .store_int(created_at, 64)
         .store_coins(min_price)
         .end_cell();
 
@@ -56,7 +54,7 @@ cell get_all_data() method_id {
                 .store_uint(id, 32)
                 .store_int(is_closed, 1)
                 .store_int(is_rejected, 1)
-                .store_uint(created_at, 32)
+                .store_uint(created_at, 64)
                 .store_coins(min_price)
                 .end_cell()
         )
@@ -164,7 +162,7 @@ cell get_all_data() method_id {
         );
         ;; TODO: handle case when remaining balance < min_price
         int reply_reward = min_price;
-        int service_fee = my_balance - min_account_balance - reply_reward;
+        int service_fee = my_balance - min_question_contract_balance - reply_reward;
 
         if (reply_reward > 0) {
             send_reward(owner_addr_s, reply_reward);
@@ -183,7 +181,7 @@ cell get_all_data() method_id {
         );
 
         int return_to_owner_amount = msg_value;
-        int amount_to_return = my_balance - return_to_owner_amount - min_account_balance;
+        int amount_to_return = my_balance - return_to_owner_amount - min_question_contract_balance;
 
         send_coins_with_comment(submitter_addr, amount_to_return, "askora. your question rejected");
         send_coins(owner_addr_s, return_to_owner_amount, op::excess_return);
@@ -200,8 +198,9 @@ cell get_all_data() method_id {
             begin_cell().end_cell(), created_at, min_price
         );
 
-        send_coins(submitter_addr, my_balance - min_account_balance, op::return_on_reject);
+        send_coins(submitter_addr, my_balance - min_question_contract_balance, op::return_on_reject);
 
         return ();
     }
+    throw(404);
 }

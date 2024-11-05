@@ -18,7 +18,7 @@ export class Question implements Contract {
         let id = c1.loadUint(32);
         let isClosed = c1.loadBoolean();
         let isRejected = c1.loadBoolean();
-        let createdAt = c1.loadUint(32);
+        let createdAt = c1.loadUint(64);
         let minPrice = c1.loadCoins();
 
         let c2 = rootCell.loadRef().beginParse();

@@ -1,12 +1,42 @@
 #include "op-codes.fc";
 #include "imports/stdlib.fc";
 
-slice get_question_addr() method_id {
+(slice, int, slice) load_data() impure {
     slice data = get_data().begin_parse();
-    return data~load_msg_addr();
+    slice parent_acc_addr = data~load_msg_addr();
+    int id = data~load_uint(32);
+
+    slice question_addr = null();
+    if (data.slice_bits() > 0) {
+        question_addr = data~load_msg_addr();
+    }
+
+    return (parent_acc_addr, id, question_addr);
+}
+
+() store_data(slice parent_addr, int id, slice question_addr) impure {
+    set_data(begin_cell()
+        .store_slice(parent_addr)
+        .store_uint(id, 32)
+        .store_slice(question_addr)
+        .end_cell());
+}
+
+slice get_question_addr() method_id {
+    (_, _, slice question_addr) = load_data();
+
+    return question_addr;
 }
 
 () recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+
+    slice sender_addr = cs~load_msg_addr();
+
+    (slice parent_addr, int id, _) = load_data();
+    throw_unless(403, equal_slices(parent_addr, sender_addr));
+
     slice question_addr = in_msg_body~load_msg_addr();
-    set_data(begin_cell().store_slice(question_addr).end_cell());
+    store_data(parent_addr, id, question_addr);
 }

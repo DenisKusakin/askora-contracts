@@ -2,8 +2,7 @@
 #include "op-codes.fc";
 #include "imports/stdlib.fc";
 
-const int min_account_balance = 1 * TON_STEP;
-const int min_account_contract_balance = 3 * TON_STEP;
+const int min_account_balance = 5 * TON_STEP;
 
 (cell, cell, cell, slice) load_data() impure {
     slice ds = get_data().begin_parse();
@@ -93,18 +92,7 @@ cell get_account_code() method_id {
         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
         .store_uint(op, 32);
 
-    send_raw_message(msg.end_cell(), 1);
-}
-
-() send_transaction_fees(slice addr, int amount) impure {
-    var msg = begin_cell()
-        .store_uint(0x10, 6)
-        .store_slice(addr)
-        .store_coins(amount)
-        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
-        .store_uint(0, 32);
-
-    send_raw_message(msg.end_cell(), 1);
+    send_raw_message(msg.end_cell(), 0);
 }
 
 () recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
@@ -135,13 +123,6 @@ cell get_account_code() method_id {
     if (op == op::create_account) {
         int min_price = in_msg_body~load_coins();
         deploy_account(sender_addr, account_code, question_code, question_ref_code, min_price, 0, 64);
-        return ();
-    }
-    if (op == op::create_account_sponsored) {
-        throw_if(405, my_balance < min_account_balance + 2 * min_account_contract_balance + msg_value);
-        int min_price = in_msg_body~load_coins();
-        deploy_account(sender_addr, account_code, question_code, question_ref_code, min_price, min_account_contract_balance, 1);
-        send_transaction_fees(sender_addr, msg_value);
         return ();
     }
     if (op == op::service_fee) {

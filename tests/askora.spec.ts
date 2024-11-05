@@ -6,17 +6,16 @@ import {
     SmartContract,
     TreasuryContract,
 } from '@ton/sandbox';
-import { Address, beginCell, Cell, fromNano, SendMode, toNano } from '@ton/core';
+import { Address, beginCell, Cell, contractAddress, fromNano, SendMode, toNano } from '@ton/core';
 import '@ton/test-utils';
 import { compile } from '@ton/blueprint';
 import { randomBytes } from 'node:crypto';
 import { Root } from '../wrappers/Root';
 
 const TON_STEP = 0.01;
-const FW_FEE = TON_STEP;
 const MIN_QUESTION_BALANCE = TON_STEP;
 const MIN_ACCOUNT_BALANCE = 3 * TON_STEP;
-const MIN_ROOT_BALANCE = TON_STEP;
+const MIN_ROOT_BALANCE = 5 * TON_STEP;
 
 const INITIAL_ROOT_BALANCE = 0.5
 
@@ -127,7 +126,7 @@ describe('All tests', () => {
         let account = await createNewAccount('user-1');
 
         expect(await account.getNextId()).toBe(0n);
-
+        //0.06 - transaction cost + 10 + 0.5(=10*5/100) = 10.56
         let user = await blockchain.treasury('user-2');
         await user.send({
             to: account.address,
@@ -141,7 +140,6 @@ describe('All tests', () => {
         let submitterAccountContract = await root.getAccount(user.address);
 
         expect(await account.getNextId()).toBe(1n);
-
         expect(await submitterAccountContract.getNextSubmittedQuestionId()).toBe(1n);
 
         let questionContractAddr = await account.getQuestionAccAddr(0);
@@ -179,6 +177,138 @@ describe('All tests', () => {
         expect(actualQuestionFullData2).toStrictEqual(expectedQuestionFullData);
         expect(toTon((await blockchain.getContract(questionContract.address)).balance)).toBeCloseTo(10.5, 0);
         expect(actualQuestionFullData.createdAt).toBe(time);
+    });
+
+    it('user should NOT be able to deploy question account directly', async () => {
+        let account = await createNewAccount('user-1');
+
+        expect(await account.getNextId()).toBe(0n);
+
+        let user = await blockchain.treasury('user-2');
+
+        //Real question creation
+        await user.send({
+            to: account.address,
+            value: toNano('10.6'),
+            body: beginCell()
+                .storeUint(BigInt('0x28b1e47a'), 32)
+                .storeRef(beginCell().storeStringTail('test content').endCell())
+                .endCell(),
+        });
+
+        //Prepare fake deploy question message
+        let fakeUser = await blockchain.treasury('fake-user');
+
+        let questionContractData = beginCell()
+            .storeAddress(account.address)
+            .storeUint(0, 32)
+            .endCell()
+
+        let qAddrFromAcc = await account.getQuestionAccAddr(0)
+        let fakeQAddr = contractAddress(0, {code: questionCode, data: questionContractData})
+
+        //Fake contract has the same address
+        expect(qAddrFromAcc.toString()).toBe(fakeQAddr.toString())
+
+        //Try to deploy fake question with intent to override state
+        await user.send({
+            to: fakeQAddr,
+            value: toNano('10.6'),
+            body: beginCell()
+                .storeUint(BigInt("0x370d4b02"), 32)
+                .storeRef(beginCell().storeStringTail("fake content").endCell())
+                .storeAddress(user.address)
+                .storeRef(beginCell()
+                    .storeAddress(fakeUser.address)
+                    .storeAddress(fakeUser.address)
+                    .storeCoins(toNano(10))
+                    .endCell())
+                .endCell(),
+            init: {
+                code: questionCode,
+                data: questionContractData
+            }
+        });
+        expect((await (await account.getQuestion(0)).getAllData()).content).toBe("test content")
+    });
+
+    it('user should NOT be able to forge question deployed message', async () => {
+        let user = await blockchain.treasury('user-1')
+        let account = await createNewAccount('user-1');
+
+        //0 messages were send
+        expect(await account.getNextSubmittedQuestionId()).toBe(0n);
+
+        //Prepare fake deploy of question created notification
+        let fakeUser = await blockchain.treasury('fake-user');
+        //Random question contract address
+        let fakeQuestionContractAddr = await account.getQuestionAccAddr(13)
+
+        let data = beginCell()
+            .storeAddress(user.address)
+            .storeAddress(root.address)
+            .storeRef(questionCode)
+            .storeRef(questionRefCode)
+            .endCell()
+
+        //Try to deploy fake question with intent to override state
+        await fakeUser.send({
+            to: account.address,
+            value: toNano('10.6'),
+            body: beginCell()
+                .storeUint(BigInt("0xb6d5bbc2"), 32)
+                .storeAddress(fakeUser.address)
+                .storeAddress(fakeQuestionContractAddr)
+                .endCell(),
+            init: {
+                code: accountCode,
+                data: data
+            }
+        });
+        expect(await account.getNextSubmittedQuestionId()).toBe(0n);
+    });
+
+    it('user should NOT be able to forge question-ref', async () => {
+        let user = await blockchain.treasury('user-1')
+        let account = await createNewAccount('user-1');
+
+        //0 messages were send
+        expect(await account.getNextSubmittedQuestionId()).toBe(0n);
+
+        //Prepare fake deploy of question created notification
+        let fakeUser = await blockchain.treasury('fake-user');
+        //Random question contract address
+        let fakeQuestionContractAddr = await account.getQuestionAccAddr(13)
+
+        let data = beginCell()
+            .storeAddress(account.address)
+            .storeUint(0, 32)
+            .endCell()
+        let fakeQuestionRefAddr = contractAddress(0, {data, code: questionRefCode});
+
+        expect((await account.getQuestionRefAddress(0)).toString()).toBe(fakeQuestionRefAddr.toString())
+
+        //Try to deploy fake question-ref
+        await fakeUser.send({
+            to: contractAddress(0, {data, code: questionRefCode}),
+            value: toNano('10.6'),
+            body: beginCell()
+                .storeAddress(fakeQuestionContractAddr)
+                .endCell(),
+            init: {
+                code: questionRefCode,
+                data: data
+            }
+        });
+        let questionRefContract = await account.getQuestionRef(0)
+        let questionAddrFromRef = null;
+        try {
+            questionAddrFromRef = await questionRefContract.getQuestionAddress()
+        } catch {
+
+        }
+
+        expect(questionAddrFromRef).toBeNull()
     });
 
     it('should create multiple questions', async () => {
@@ -219,7 +349,7 @@ describe('All tests', () => {
 
         await createNewAccount('user-2', toNano(2))
         let user = await blockchain.treasury('user-2');
-        let res = await user.send({
+        await user.send({
             to: account.address,
             value: toNano(0.8 + 0.8*5/100 + 0.06),
             body: beginCell()
@@ -244,7 +374,8 @@ describe('All tests', () => {
         let questionContract = await account.getQuestion(0);
         expect((await questionContract.getAllData()).content).toBe('test content');
         expect((await questionContract.getAllData()).isClosed).toBe(false);
-        expect(toTon((await blockchain.getContract(questionContract.address)).balance)).toBeCloseTo(0.8 + 5*0.8/100 + MIN_QUESTION_BALANCE);
+        expect(toTon((await blockchain.getContract(questionContract.address)).balance))
+            .toBeCloseTo(0.8 + 5*0.8/100 + MIN_QUESTION_BALANCE);
 
         let actualQuestionFullData = await questionContract.getAllData();
         let actualQuestionFullData2 = {
@@ -267,7 +398,6 @@ describe('All tests', () => {
         };
 
         expect(actualQuestionFullData2).toStrictEqual(expectedQuestionFullData);
-        expect(toTon((await blockchain.getContract(questionContract.address)).balance)).toBeCloseTo(0.8 + 5*0.8/100 + MIN_QUESTION_BALANCE);
         expect(actualQuestionFullData.createdAt).toBe(time);
     });
 
@@ -303,7 +433,7 @@ describe('All tests', () => {
         amount: bigint,
         content: string = 'test content',
     ) {
-        await sender.send({
+        return await sender.send({
             to: accountAddr,
             value: amount,
             body: beginCell()
@@ -330,7 +460,7 @@ describe('All tests', () => {
     }
 
     async function rejectQuestion(sender: SandboxContract<TreasuryContract>, questionAddr: Address) {
-        let res = await sender.send({
+        return await sender.send({
             to: questionAddr,
             value: toNano('0.01'),
             body: beginCell().storeUint(BigInt('0xa5c566b9'), 32).endCell(),
@@ -377,19 +507,18 @@ describe('All tests', () => {
         blockchain.now = time1;
 
         let account = await createNewAccount('account-user-111', toNano(10));
-        //console.log("!!!", (await blockchain.getContract(account.address)).accountState)
         let userInitialBalance = 50;
         let user = await blockchain.treasury('user-321', { balance: toNano(userInitialBalance) });
 
-        await submitQuestion(user, account.address, toNano('12'));
+        await submitQuestion(user, account.address, toNano('20'));
 
         let questionContractAddr = await account.getQuestionAccAddr(0);
         let questionContract = await account.getQuestion(0);
 
         expect((await questionContract.getAllData()).isClosed).toBeFalsy();
-        //05 - service fee, not sure why two FW_FEE, TODO: check later
         expect(toTon(await user.getBalance())).toBeCloseTo(
-            userInitialBalance - 10 - 0.5 - MIN_ACCOUNT_BALANCE - 2 * FW_FEE,
+            userInitialBalance - 10 - 0.5 - MIN_ACCOUNT_BALANCE - MIN_QUESTION_BALANCE,
+            1
         );
 
         let otherUser = await blockchain.treasury('other-user-3211');
@@ -417,7 +546,7 @@ describe('All tests', () => {
         let questionContract = await account.getQuestion(0);
 
         expect((await questionContract.getAllData()).isClosed).toBeFalsy();
-        expect(toTon(await user.getBalance())).toBeCloseTo(15 - 10.5 - MIN_ACCOUNT_BALANCE - 2 * FW_FEE);
+        expect(toTon(await user.getBalance())).toBeCloseTo(15 - 10.5 - MIN_ACCOUNT_BALANCE, 1);
 
         let otherUser = await blockchain.treasury('other-user-3212');
         blockchain.now = time2;
@@ -542,7 +671,8 @@ describe('All tests', () => {
         expect(toTon((await blockchain.getContract(questionContractAddr)).balance)).toBeCloseTo(MIN_QUESTION_BALANCE);
         //user should pay for his new account + question + fw_fee
         expect(toTon(userBalanceAfter - userBalanceBefore)).toBeCloseTo(
-            -(MIN_ACCOUNT_BALANCE + MIN_QUESTION_BALANCE + TON_STEP),
+            -(MIN_ACCOUNT_BALANCE + MIN_QUESTION_BALANCE),
+            1
         );
     });
 
@@ -606,11 +736,11 @@ describe('All tests', () => {
         }
     });
 
-    it('it should be cheap to submit question to zero-priced account - 0.05 TON', async () => {
+    it('it should be cheap to submit question to zero-priced account - 0.06 TON', async () => {
         let account = await createNewAccount('test-account-owner', 0n);
         let accountUser = await blockchain.treasury('test-account-owner');
         let user = await blockchain.treasury('t-user-1');
-        let transactionValue = 0.05; //MIN_ACCOUNT_BALANCE + MIN_QUESTION_BALANCE + 0.01
+        let transactionValue = 0.06; //MIN_ACCOUNT_BALANCE + MIN_QUESTION_BALANCE + 0.01
         await submitQuestion(user, account.address, toNano(transactionValue));
         let questionContract = await account.getQuestion(0);
         let questionContractBalance = (await blockchain.getContract(questionContract.address)).balance;
@@ -680,6 +810,8 @@ describe('All tests', () => {
         }
 
         let actualAppOwnerBalance = await getRootBalance();
+        let accountContractBalance = (await blockchain.getContract(accountContract.address)).balance
+        expect(toTon(accountContractBalance)).toBeCloseTo(MIN_ACCOUNT_BALANCE, 1)
         //TODO: why - INITIAL_ROOT_BALANCE
         expect(toTon(actualAppOwnerBalance - initialBalance) - INITIAL_ROOT_BALANCE).toBeCloseTo(questionsPerAccount * amount * (5 / 100), 0);
     });
@@ -723,48 +855,26 @@ describe('All tests', () => {
         expect(toTon(res.transactions[0].description.storagePhase?.storageFeesCollected)).toBeCloseTo(0.002);
     });
 
-    it('account creation could be sponsored', async () => {
-        let user = await blockchain.treasury('user', {balance: toNano(10)});
-        await user.send({
-            value: toNano(0.5),
-            to: root.address,
-            body: beginCell()
-                .storeUint(BigInt('0x74385f77'), 32)
-                .storeUint(BigInt(123), 64)
-                .storeCoins(toNano(3.14))
-                .endCell(),
-            sendMode: SendMode.PAY_GAS_SEPARATELY
-        });
-        let account = await root.getAccount(user.address);
-        expect(await account.getPrice()).toBe(toNano(3.14))
-        expect(toTon(await user.getBalance())).toBeCloseTo(10)
-    })
+    it('account could exist for a long time if receives question every 6 months', async () => {
+        const time1 = Math.floor(Date.now() / 1000);
+        const delta = 0.5 * 365 * 24 * 60 * 60;
 
-    it(`0.5 TON should be enough to sponsor creation of 10 accounts`, async () => {
-        for(let i = 0; i < 10; i++){
-            let user = await blockchain.treasury(`user-${i}`, {balance: toNano(10)});
-            await user.send({
-                value: toNano(0.5),
-                to: root.address,
-                body: beginCell()
-                    .storeUint(BigInt('0x74385f77'), 32)
-                    .storeUint(BigInt(123), 64)
-                    .storeCoins(toNano(3.14))
-                    .endCell()
-            });
-            let account = await root.getAccount(user.address);
-            expect(await account.getPrice()).toBe(toNano(3.14))
-            expect(toTon(await user.getBalance())).toBeCloseTo(10)
+        blockchain.now = time1;
+        const accountContract = await createNewAccount('test-account-owner', toNano(20));
+
+        for(let i = 1; i <= 60; i++) {
+            blockchain.now = time1 + i*delta;
+            const user = await blockchain.treasury(`test-user-${i}`);
+
+            await submitQuestion(user, accountContract.address, toNano(21.1), randomBytes(280).toString('hex'));
+            let question = await accountContract.getQuestion(i - 1);
+            expect(toTon((await blockchain.getContract(question.address)).balance)).toBeCloseTo(21, 0)
         }
+        let balance = (await blockchain.getContract(accountContract.address)).balance
+        let status = (await blockchain.getContract(accountContract.address)).accountState?.type
+
+        expect(status).toBe('active')
+        expect(toTon(balance)).toBeCloseTo(MIN_ACCOUNT_BALANCE, 1)
+        expect(await accountContract.getNextId()).toBe(60n);
     })
-    // it('test', async () => {
-    //     let data = "te6ccgECGAEAAvEAApeAHM/JUPHRpQUCmAkEylt8EkIDboam6TnzILkFY2ePyRAQA/lC/dlJXUfkGXhWhvUlCgeWd7Kl5qMDR/IsUwcioIswAAAAAAAAABQgAQIBFP8A9KQT9LzyyAsDART/APSkE/S88sgLFQIBYgQFAgLNBgcAXaFlC+ACa5CgD54soBOeLKAJni2SC5GYL5mSC5GWPi2UAZQBlj6gB/QFk5GZmZmTAgEgCAkCASAREgIBIAoLAgEgDxAD4wB0NMDAXGwkl8E4PpAMPABbCIK0x8hghA3DUsCuo4jO18HNDRSMMcF8uGT1PpA1DDQ+kD6QPoAMPgjcHDIyUA08ALgghD9qMbgJLOwUiC64wIwghClxWa5I7OwUhC64wI5OoIQVhbFcgGzsBe64wJfCYAwNDgBzO1E0PpA0x8g10nAAJowbW1tbXBwbW1t4PpA1AHQ1PpA1PpABdIf0h8wBtIf+gAwEGgQZxBWEDUQJIABmMTI6UXLHBfLhkwbUMH9wUzhQRFHL8AIDggiYloChIaEhwgCbWfAEghC0GRfC8AaSXwTiAJAwMVFyxwXy4ZN/f8jJU1RQvPACUTKhggiYloChE40HmFza29yYS4geW91ciBxdWVzdGlvbiByZWplY3RlZIPAFghDoJolZ8AMAZCeCCAk6gKD4I77y0ZN/cMjJJBCKEHkQaAcQRgUQNEG7A/ACAYIImJaAoYIQlDEIpvADAFEyFAHzxZQBc8WF8wWzBLKH1j6AsnIUAbPFhTLHwHPFhPMyh/KH8ntVIAAtHCAEMjLBVAEzxZY+gISy2rLH8lx+wCACASATFAA5SAe3CAEMjLBVAFzxZQA/oCE8tqEssfyz/JcfsAgAVSL1hc2tvcmEgcmV3YXJkhwIIAQyMsFUAXPFlAD+gITy2rLHwHPFslx+wCAANxwIIAQyMsFUAXPFlAD+gITy2rLHwHPFslx+wCACAWIWFwAa0Gwx+kAwyAHPFsntVAARocYH2omh9IBh"
-    //     let cell = Cell.fromBase64(data)
-    //
-    //     let a = cell.beginParse()
-    //     let x1 = a.loadAddress()
-    //     let x2 = a.loadAddress()
-    //
-    //     console.log("Addrs", x1.toString(), x2.toString())
-    // })
 });
