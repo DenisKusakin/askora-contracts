@@ -11,6 +11,7 @@ import '@ton/test-utils';
 import { compile } from '@ton/blueprint';
 import { randomBytes } from 'node:crypto';
 import { Root } from '../wrappers/Root';
+import { findTransaction } from '@ton/test-utils';
 
 const TON_STEP = 0.01;
 const MIN_QUESTION_BALANCE = TON_STEP;
@@ -128,7 +129,7 @@ describe('All tests', () => {
         expect(await account.getNextId()).toBe(0n);
         //0.06 - transaction cost + 10 + 0.5(=10*5/100) = 10.56
         let user = await blockchain.treasury('user-2');
-        await user.send({
+        let res = await user.send({
             to: account.address,
             value: toNano('10.6'),
             body: beginCell()
@@ -136,6 +137,7 @@ describe('All tests', () => {
                 .storeRef(beginCell().storeStringTail('test content').endCell())
                 .endCell(),
         });
+        printTransactionFees(res.transactions)
 
         let submitterAccountContract = await root.getAccount(user.address);
 
@@ -479,7 +481,8 @@ describe('All tests', () => {
         expect((await questionContract.getAllData()).isClosed).toBeFalsy();
 
         let accountOwner = await blockchain.treasury('account-user');
-        await replyToQuestion(accountOwner, questionContractAddr, 'reply content 1');
+        let replyRes = await replyToQuestion(accountOwner, questionContractAddr, 'reply content 1');
+
         expect((await questionContract.getAllData()).isClosed).toBeTruthy();
         expect((await questionContract.getAllData()).replyContent).toBe('reply content 1');
         let actualAllData = await questionContract.getAllData();
@@ -498,6 +501,15 @@ describe('All tests', () => {
             submitterAdd: user.address.toString(),
         };
         expect(actualAllData2).toStrictEqual(expectedAllData);
+        //Notify person who submitted the question
+        expect(replyRes.transactions).toHaveTransaction({
+            from: questionContractAddr,
+            to: user.address,
+            success: true,
+            exitCode: 0,
+            op: 0,
+            value: 1000000n
+        })
     });
 
     it('anyone could cancel the question after expiration', async () => {
@@ -696,7 +708,8 @@ describe('All tests', () => {
 
         //0.05 - initial root account balance, TON_STEP - min root balance
         //TODO: 0.1 is taken from reply, this should not be the case
-        expect(toTon(appOwnerBalance - appOwnerBalanceBeforeWithdraw)).toBeCloseTo(15*5/100 + 0.1 + (INITIAL_ROOT_BALANCE - MIN_ROOT_BALANCE), 1);
+        expect(toTon(appOwnerBalance - appOwnerBalanceBeforeWithdraw))
+            .toBeCloseTo(15*5/100 + (INITIAL_ROOT_BALANCE - MIN_ROOT_BALANCE), 1);
     });
 
     it('submit multiple questions from one account. counterpart user account does not exist', async () => {

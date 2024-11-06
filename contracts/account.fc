@@ -224,7 +224,7 @@ cell get_all_data() method_id {
         }
 
         int min_notification_amount = min_account_contract_balance + min_question_ref_contract_balance;
-        int question_contract_amount = min_price + service_fee + min_question_contract_balance;
+        int question_contract_amount = min_price + service_fee + min_question_contract_balance + notification_amount;
         throw_if(405, msg_value < question_contract_amount + min_notification_amount + coins_to_keep_on_this_acc);
 
         cell content = in_msg_body~load_ref();

@@ -8,13 +8,13 @@ export async function run(provider: NetworkProvider) {
     let questionCode = await compile('question');
     let questionRefCode = await compile('question-ref');
 
-    const root = provider.open(Root.createFromConfig({
-            accountCode,
-            questionCode,
-            questionRefCode
-        },
-        rootCode));
-    // const root = provider.open(Root.createFromAddress(Address.parse("EQDUE6mFWRnOnPj2cSygAbYUpiof_A6PHAPSazrnRmp351P3")))
+    // const root = provider.open(Root.createFromConfig({
+    //         accountCode,
+    //         questionCode,
+    //         questionRefCode
+    //     },
+    //     rootCode));
+    const root = provider.open(Root.createFromAddress(Address.parse("EQDBDJbpECe3iJ_0RXWpAxmFEJgyUeoTyBzweYbOM9sCfG14")))
 
     console.log("Root address", root.address.toString());
     await root.sendWithdrawSafe(provider.sender());

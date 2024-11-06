@@ -96,7 +96,7 @@ cell get_all_data() method_id {
         .store_uint(0, 32)
         .store_slice(comment);
 
-    send_raw_message(msg.end_cell(), 1);
+    send_raw_message(msg.end_cell(), 0);
 }
 
 () send_coins_with_comment(slice addr, int amount, slice comment) impure {
@@ -151,6 +151,7 @@ cell get_all_data() method_id {
             false, false,
             begin_cell().end_cell(), current_time, price
         );
+        send_coins_with_comment(owner_addr, notification_amount, "askora. You received a question!🔥");
         return ();
     }
     if (op == op::reply & (~ is_closed)) {
@@ -160,15 +161,18 @@ cell get_all_data() method_id {
             owning_account_addr, id, content, submitter_addr, owner_addr_s,
             service_fee_addr, true, false, reply_content, created_at, min_price
         );
-        ;; TODO: handle case when remaining balance < min_price
-        int reply_reward = min_price;
-        int service_fee = my_balance - min_question_contract_balance - reply_reward;
+        ;; subtract min_contract_amount to be sure that the contract have enough coins for further processing
+        ;; TODO: this should be done better somehow
+        int reply_reward = min_price + msg_value - min_question_contract_balance;
+        int service_fee = muldiv(min_price, 5, 100);
 
         if (reply_reward > 0) {
             send_reward(owner_addr_s, reply_reward);
+        }
+        if (service_fee > 0) {
             send_service_fee(service_fee_addr, service_fee, op::service_fee);
         }
-
+        send_coins_with_comment(submitter_addr, notification_amount, "askora. Your question has been answered!🔥");
         return ();
     }
     if (op == op::reject & (~ is_closed)) {
@@ -183,7 +187,7 @@ cell get_all_data() method_id {
         int return_to_owner_amount = msg_value;
         int amount_to_return = my_balance - return_to_owner_amount - min_question_contract_balance;
 
-        send_coins_with_comment(submitter_addr, amount_to_return, "askora. your question rejected");
+        send_coins_with_comment(submitter_addr, amount_to_return, "askora. Your question has been rejected😢");
         send_coins(owner_addr_s, return_to_owner_amount, op::excess_return);
 
         return ();
