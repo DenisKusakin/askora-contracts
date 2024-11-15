@@ -1,4 +1,4 @@
-import { toNano } from '@ton/core';
+import { Address, toNano } from '@ton/core';
 import { compile, NetworkProvider } from '@ton/blueprint';
 import { Root } from '../wrappers/Root';
 
@@ -16,6 +16,6 @@ export async function run(provider: NetworkProvider) {
         rootCode));
 
     console.log("Root address", root.address.toString());
-    await root.sendDeploy(provider.sender(), toNano('0.6'));
+    await root.sendDeploy(provider.sender(), toNano('0.6'), Address.parse('EQAVpcsurdxJO8O-XHng_xXV1I01euhnLNL1ZkPbMPG_vWRb'));
     await provider.waitForDeploy(root.address);
 }

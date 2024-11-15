@@ -38,6 +38,7 @@ const int max_valid_seconds = 7 * 24 * 60 * 60; ;;7 days
         .store_uint(id, 32)
         .store_slice(submitter_addr)
         .store_ref(add_addrs)
+        ;;TODO: Can we store flags as 1 bit?
         .store_int(is_closed, 32)
         .store_int(is_rejected, 32)
         .end_cell()
@@ -86,6 +87,17 @@ cell get_all_data() method_id {
     send_raw_message(msg.end_cell(), 1);
 }
 
+() send_coins_with_mode(slice addr, int amount, int op, int mode) impure {
+    var msg = begin_cell()
+        .store_uint(0x10, 6)
+        .store_slice(addr)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(op, 32);
+
+    send_raw_message(msg.end_cell(), mode);
+}
+
 () send_reward(slice addr, int amount) impure {
     slice comment = "askora reward";
     var msg = begin_cell()
@@ -108,7 +120,7 @@ cell get_all_data() method_id {
         .store_uint(0, 32)
         .store_slice(comment);
 
-    send_raw_message(msg.end_cell(), 1);
+    send_raw_message(msg.end_cell(), 0);
 }
 
 () send_service_fee(slice addr, int amount, int op) impure {
@@ -117,10 +129,24 @@ cell get_all_data() method_id {
         .store_slice(addr)
         .store_coins(amount)
         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
-        .store_uint(op, 32)
-        .store_uint(123, 64);
+        .store_uint(op, 32);
 
     send_raw_message(msg.end_cell(), 1);
+}
+
+() send_question_notification(slice root_addr, int op, int amount, slice owner, int id, slice submitter_addr) impure {
+    var msg = begin_cell()
+        .store_uint(0x10, 6)
+        .store_slice(root_addr)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(op, 32)
+        .store_slice(owner)
+        .store_int(id, 32)
+        .store_slice(submitter_addr)
+        .end_cell();
+
+    send_raw_message(msg, 1);
 }
 
 () recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
@@ -151,12 +177,21 @@ cell get_all_data() method_id {
             false, false,
             begin_cell().end_cell(), current_time, price
         );
-        send_coins_with_comment(owner_addr, notification_amount, "askora. You received a question!🔥");
+        ;; send_coins_with_comment(owner_addr, notification_amount, "askora. You received a question!🔥");
+        send_question_notification(service_fee_addr_from_msg, op::question_created_notification, notification_amount, owner_addr, id, submitter_addr_from_msg);
         return ();
     }
     if (op == op::reply & (~ is_closed)) {
-        throw_unless(403, equal_slices(sender_addr, owner_addr_s));
         cell reply_content = in_msg_body~load_ref();
+        int is_sponsored = false;
+        if (in_msg_body.slice_bits() > 0) {
+            is_sponsored = in_msg_body~load_int(32);
+        }
+        if (is_sponsored) {
+            throw_unless(403, equal_slices(sender_addr, service_fee_addr));
+        } else {
+            throw_unless(403, equal_slices(sender_addr, owner_addr_s));
+        }
         store_data(
             owning_account_addr, id, content, submitter_addr, owner_addr_s,
             service_fee_addr, true, false, reply_content, created_at, min_price
@@ -166,17 +201,36 @@ cell get_all_data() method_id {
         int reply_reward = min_price + msg_value - min_question_contract_balance;
         int service_fee = muldiv(min_price, 5, 100);
 
+        if (is_sponsored) {
+            reply_reward = min_price;
+            ;; one min_question_contract_balance is to keep on the balance, the other one - processing fee
+            service_fee = my_balance - reply_reward - 2 * min_question_contract_balance;
+        } else {
+            reply_reward = min_price + msg_value - min_question_contract_balance;
+            service_fee = muldiv(min_price, 5, 100);
+        }
+
         if (reply_reward > 0) {
             send_reward(owner_addr_s, reply_reward);
         }
         if (service_fee > 0) {
             send_service_fee(service_fee_addr, service_fee, op::service_fee);
         }
-        send_coins_with_comment(submitter_addr, notification_amount, "askora. Your question has been answered!🔥");
+        ;;send_coins_with_comment(submitter_addr, notification_amount, "askora. Your question has been answered!🔥");
+        ;;TODO: don't send twice if service fee > 0
+        send_question_notification(service_fee_addr, op::question_replied_notification, notification_amount, owner_addr_s, id, submitter_addr);
         return ();
     }
     if (op == op::reject & (~ is_closed)) {
-        throw_unless(403, equal_slices(sender_addr, owner_addr_s));
+        int is_sponsored = false;
+        if (in_msg_body.slice_bits() > 0) {
+            is_sponsored = in_msg_body~load_int(32);
+        }
+        if (is_sponsored) {
+            throw_unless(403, equal_slices(sender_addr, service_fee_addr));
+        } else {
+            throw_unless(403, equal_slices(sender_addr, owner_addr_s));
+        }
         store_data(
             owning_account_addr, id, content, submitter_addr,
             owner_addr_s,
@@ -184,11 +238,17 @@ cell get_all_data() method_id {
             begin_cell().end_cell(), created_at, min_price
         );
 
-        int return_to_owner_amount = msg_value;
+        ;;TODO: this is not accurate
+        int return_to_owner_amount = msg_value - min_question_contract_balance;
         int amount_to_return = my_balance - return_to_owner_amount - min_question_contract_balance;
 
         send_coins_with_comment(submitter_addr, amount_to_return, "askora. Your question has been rejected😢");
-        send_coins(owner_addr_s, return_to_owner_amount, op::excess_return);
+        if (is_sponsored){
+            send_coins_with_mode(service_fee_addr, return_to_owner_amount, op::excess_return, 0);
+        } else {
+            send_coins_with_mode(owner_addr_s, return_to_owner_amount, op::excess_return, 0);
+        }
+        send_question_notification(service_fee_addr, op::question_rejected_notification, notification_amount, owner_addr_s, id, submitter_addr);
 
         return ();
     }

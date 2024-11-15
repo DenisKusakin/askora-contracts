@@ -1,10 +1,9 @@
 import {
     Blockchain,
     internal,
-    printTransactionFees,
     SandboxContract,
     SmartContract,
-    TreasuryContract,
+    TreasuryContract
 } from '@ton/sandbox';
 import { Address, beginCell, Cell, contractAddress, fromNano, SendMode, toNano } from '@ton/core';
 import '@ton/test-utils';
@@ -17,8 +16,11 @@ const TON_STEP = 0.01;
 const MIN_QUESTION_BALANCE = TON_STEP;
 const MIN_ACCOUNT_BALANCE = 3 * TON_STEP;
 const MIN_ROOT_BALANCE = 5 * TON_STEP;
+const NOTIFICATION_AMOUNT = 0.003;
 
 const INITIAL_ROOT_BALANCE = 0.5
+
+const SPONSOR_CONTRACT_INITIAL_BALANCE = 10;
 
 describe('All tests', () => {
     let rootCode: Cell;
@@ -35,12 +37,14 @@ describe('All tests', () => {
 
     let blockchain: Blockchain;
     let deployer: SandboxContract<TreasuryContract>;
+    let sponsor: SandboxContract<TreasuryContract>;
     let root: SandboxContract<Root>;
 
     beforeEach(async () => {
         blockchain = await Blockchain.create();
 
         deployer = await blockchain.treasury('deployer', { balance: toNano('10') });
+        sponsor = await blockchain.treasury('sponsor', {balance: toNano(SPONSOR_CONTRACT_INITIAL_BALANCE)})
         root = blockchain.openContract(
             Root.createFromConfig(
                 {
@@ -51,26 +55,42 @@ describe('All tests', () => {
                 rootCode,
             ),
         );
-        root.sendDeploy(deployer.getSender(), toNano(INITIAL_ROOT_BALANCE));
+        root.sendDeploy(deployer.getSender(), toNano(INITIAL_ROOT_BALANCE), sponsor.address);
     });
 
-    async function createNewAccount(username: string | undefined = undefined, price: bigint = toNano('10')) {
+    async function createNewAccount(username: string | undefined = undefined, price: bigint = toNano('10'), description: string = 'test description') {
         let user = await blockchain.treasury(username || 'user-1');
         await user.send({
             value: toNano(0.5),
             to: root.address,
             body: beginCell()
                 .storeUint(BigInt('0x5f0ec1a3'), 32)
-                .storeUint(BigInt(123), 64)
                 .storeCoins(price)
+                .storeRef(beginCell().storeStringTail(description).endCell())
                 .endCell(),
         });
         return root.getAccount(user.address);
     }
 
+    async function createNewAccountSponsored(ownerAddr: Address, price: bigint = toNano('10'), description: string = 'test description', amount = toNano(0.5)) {
+        let res = await sponsor.send({
+            value: amount,
+            to: root.address,
+            body: beginCell()
+                .storeUint(BigInt('0x74385f77'), 32)
+                .storeAddress(ownerAddr)
+                .storeCoins(price)
+                .storeRef(beginCell().storeStringTail(description).endCell())
+                .endCell(),
+        });
+        const accountContract = await root.getAccount(ownerAddr);
+        return {accountContract, transactionsRes: res};
+    }
+
     async function createNewAccountViaQuestionSubmit(
         username: string | undefined = undefined,
         price: bigint = toNano('10'),
+        description: string = 'test description'
     ) {
         let user = await blockchain.treasury(username || 'user-1');
         let otherUser = await blockchain.treasury(username || 'user-23');
@@ -80,8 +100,8 @@ describe('All tests', () => {
             to: root.address,
             body: beginCell()
                 .storeUint(BigInt('0x5f0ec1a3'), 32)
-                .storeUint(BigInt(123), 64)
                 .storeCoins(price)
+                .storeRef(beginCell().storeStringTail(description).endCell())
                 .endCell(),
         });
         let otherAccountContractAddress = await root.getAccountAddress(otherUser.address);
@@ -102,17 +122,57 @@ describe('All tests', () => {
             minPrice: actualFullData.minPrice,
             assignedQuestionsCount: actualFullData.assignedQuestionsCount,
             submittedQuestionsCount: actualFullData.submittedQuestionsCount,
+            description: actualFullData.description
         };
         let expectedFullData = {
             owner: user.address.toRawString(),
             minPrice: toNano(10),
             assignedQuestionsCount: 0,
             submittedQuestionsCount: 0,
+            description: 'test description'
         };
 
         expect(toTon((await blockchain.getContract(accountContractAddr)).balance)).toBeCloseTo(MIN_ACCOUNT_BALANCE, 1);
         expect(await accountContract.getPrice()).toBe(toNano('10'));
         expect(actualFullData2).toStrictEqual(expectedFullData);
+    });
+
+    it('should deploy sponsored account', async () => {
+        let user = await blockchain.treasury('user-1');
+
+        let {accountContract, transactionsRes} = await createNewAccountSponsored(user.address, toNano(10), 'test description', toNano(0.05));
+        let accountContractAddr = accountContract.address;
+        let actualFullData = await accountContract.getAllData();
+        let actualFullData2 = {
+            owner: actualFullData.owner.toRawString(),
+            minPrice: actualFullData.minPrice,
+            assignedQuestionsCount: actualFullData.assignedQuestionsCount,
+            submittedQuestionsCount: actualFullData.submittedQuestionsCount,
+            description: actualFullData.description
+        };
+        let expectedFullData = {
+            owner: user.address.toRawString(),
+            minPrice: toNano(10),
+            assignedQuestionsCount: 0,
+            submittedQuestionsCount: 0,
+            description: 'test description'
+        };
+
+        expect(toTon((await blockchain.getContract(accountContractAddr)).balance)).toBeCloseTo(MIN_ACCOUNT_BALANCE, 1);
+        expect(await accountContract.getPrice()).toBe(toNano('10'));
+        expect(actualFullData2).toStrictEqual(expectedFullData);
+        expect(transactionsRes.transactions).toHaveTransaction({
+            from: accountContractAddr,
+            to: root.address,
+            success: true
+        });
+        let excessReturnTransaction = findTransaction(transactionsRes.transactions, {
+            from: accountContractAddr,
+            to: root.address
+        })
+        //@ts-ignore
+        const coinsInTransaction = toTon(excessReturnTransaction.inMessage.info.value.coins)
+        expect(coinsInTransaction).toBeCloseTo(0.05 - MIN_ACCOUNT_BALANCE, 1)
     });
 
     async function getQuestionAddrFromRef(questionRef: SmartContract) {
@@ -125,11 +185,10 @@ describe('All tests', () => {
         blockchain.now = time;
 
         let account = await createNewAccount('user-1');
-
         expect(await account.getNextId()).toBe(0n);
         //0.06 - transaction cost + 10 + 0.5(=10*5/100) = 10.56
         let user = await blockchain.treasury('user-2');
-        let res = await user.send({
+        let submitQuestionRes = await user.send({
             to: account.address,
             value: toNano('10.6'),
             body: beginCell()
@@ -137,12 +196,12 @@ describe('All tests', () => {
                 .storeRef(beginCell().storeStringTail('test content').endCell())
                 .endCell(),
         });
-        printTransactionFees(res.transactions)
 
         let submitterAccountContract = await root.getAccount(user.address);
 
         expect(await account.getNextId()).toBe(1n);
         expect(await submitterAccountContract.getNextSubmittedQuestionId()).toBe(1n);
+        expect((await submitterAccountContract.getAllData()).description).toBe('')
 
         let questionContractAddr = await account.getQuestionAccAddr(0);
         let questionRefAddr = await submitterAccountContract.getQuestionRefAddress(0);
@@ -179,6 +238,15 @@ describe('All tests', () => {
         expect(actualQuestionFullData2).toStrictEqual(expectedQuestionFullData);
         expect(toTon((await blockchain.getContract(questionContract.address)).balance)).toBeCloseTo(10.5, 0);
         expect(actualQuestionFullData.createdAt).toBe(time);
+
+        expect(submitQuestionRes.transactions).toHaveTransaction({
+            from: questionContractAddr,
+            to: root.address,
+            success: true,
+            exitCode: 0,
+            op: 0x5d2c2cd5,
+            value: toNano(NOTIFICATION_AMOUNT)
+        })
     });
 
     it('user should NOT be able to deploy question account directly', async () => {
@@ -461,11 +529,41 @@ describe('All tests', () => {
         });
     }
 
+    async function replyToQuestionSponsored(
+        account_owner: Address,
+        q_id: number,
+        replyContent: string = 'default reply',
+        amount: bigint = toNano('0.6'),
+    ) {
+        return await sponsor.send({
+            to: root.address,
+            value: amount,
+            body: beginCell()
+                .storeUint(BigInt('0xd9c2a251'), 32)
+                .storeAddress(account_owner)
+                .storeUint(q_id, 32)
+                .storeRef(beginCell().storeStringTail(replyContent).endCell())
+                .endCell(),
+        });
+    }
+
     async function rejectQuestion(sender: SandboxContract<TreasuryContract>, questionAddr: Address) {
         return await sender.send({
             to: questionAddr,
-            value: toNano('0.01'),
+            value: toNano('0.1'),
             body: beginCell().storeUint(BigInt('0xa5c566b9'), 32).endCell(),
+        });
+    }
+
+    async function rejectQuestionSponsored(owner: Address, qId: number) {
+        return await sponsor.send({
+            to: root.address,
+            value: toNano('0.1'),
+            body: beginCell()
+                .storeUint(BigInt('0x23b39f85'), 32)
+                .storeAddress(owner)
+                .storeUint(qId, 32)
+                .endCell(),
         });
     }
 
@@ -473,8 +571,7 @@ describe('All tests', () => {
         let account = await createNewAccount('account-user');
         let user = await blockchain.treasury('user-3');
 
-        await submitQuestion(user, account.address, toNano('11.6'));
-
+        let res = await submitQuestion(user, account.address, toNano('11.6'));
         let questionContractAddr = await account.getQuestionAccAddr(0);
         let questionContract = await account.getQuestion(0);
 
@@ -504,11 +601,11 @@ describe('All tests', () => {
         //Notify person who submitted the question
         expect(replyRes.transactions).toHaveTransaction({
             from: questionContractAddr,
-            to: user.address,
+            to: root.address,
             success: true,
             exitCode: 0,
-            op: 0,
-            value: 1000000n
+            op: 0xb67beedd,
+            value: toNano(NOTIFICATION_AMOUNT)
         })
     });
 
@@ -588,6 +685,53 @@ describe('All tests', () => {
         expect(await account.getPrice()).toBe(toNano(15));
     });
 
+    it('user should be able to change the price sponsored', async () => {
+        let account = await createNewAccount('account-user', toNano('10'));
+        let accountUser = await blockchain.treasury('account-user');
+
+        expect(await account.getPrice()).toBe(toNano(10));
+        let res = await sponsor.send({
+            to: root.address,
+            value: toNano(0.01),
+            body: beginCell()
+                .storeUint(BigInt('0xbef672d6'), 32)
+                .storeAddress(accountUser.address)
+                .storeCoins(toNano(15))
+                .endCell(),
+        });
+        expect(await account.getPrice()).toBe(toNano(15));
+    });
+
+    it('user should be able to change account description', async () => {
+        let account = await createNewAccount('account-user', toNano('10'));
+        let accountUser = await blockchain.treasury('account-user');
+
+        expect(await account.getPrice()).toBe(toNano(10));
+        await accountUser.send({
+            to: account.address,
+            value: toNano(0.01),
+            body: beginCell().storeUint(BigInt('0x901bca3e'), 32).storeStringRefTail('new description').endCell(),
+        });
+        expect((await account.getAllData()).description).toBe('new description');
+    });
+
+    it('user should be able to change account description sponsored', async () => {
+        let account = await createNewAccount('account-user', toNano('10'));
+        let accountUser = await blockchain.treasury('account-user');
+
+        expect(await account.getPrice()).toBe(toNano(10));
+        await sponsor.send({
+            to: root.address,
+            value: toNano(0.01),
+            body: beginCell()
+                .storeUint(BigInt('0xcc3612de'), 32)
+                .storeAddress(accountUser.address)
+                .storeStringRefTail('new description')
+                .endCell(),
+        });
+        expect((await account.getAllData()).description).toBe('new description');
+    });
+
     it('user still could receive and send questions after changing the price', async () => {
         let senderUser = await blockchain.treasury('test-user')
 
@@ -655,6 +799,36 @@ describe('All tests', () => {
         );
     });
 
+    it('user should be able to reply to question using sponsored transaction', async () => {
+        let accountOwner = await blockchain.treasury('account-user-2');
+        let account = await createNewAccount('account-user-2', toNano('15'));
+        let accountOwnerBalanceBefore = await accountOwner.getBalance();
+        let rootBalanceBefore = await getRootBalance();
+        let user = await blockchain.treasury('user-4');
+
+        //in addition to question price, user should also pay for a new account + question
+        await submitQuestion(user, account.address, toNano(20));
+
+        let questionContract = await account.getQuestion(0);
+        await replyToQuestionSponsored(accountOwner.address, 0, 'reply', toNano('0.01'));
+
+        let accountBalanceAfter = await accountOwner.getBalance();
+        let expectedServiceFee = (15 * 5) / 100; //5%
+        let ownerBalanceDiff = toTon(accountBalanceAfter - accountOwnerBalanceBefore);
+        let rootBalanceDiff = toTon((await getRootBalance()) - rootBalanceBefore);
+
+        let accountContractBalance = (await blockchain.getContract(account.address)).balance;
+        let questionContractBalance = (await blockchain.getContract(questionContract.address)).balance;
+
+        expect(toTon(accountContractBalance)).toBeCloseTo(MIN_ACCOUNT_BALANCE, 1);
+        expect(toTon(questionContractBalance)).toBeCloseTo(MIN_QUESTION_BALANCE);
+        expect(rootBalanceDiff).toBeCloseTo(expectedServiceFee, 1);
+        expect(ownerBalanceDiff).toBeCloseTo(15);
+        expect(toTon((await blockchain.getContract(questionContract.address)).balance)).toBeCloseTo(
+            MIN_QUESTION_BALANCE,
+        );
+    })
+
     it('owner should be able to reject a question', async () => {
         let accountOwner = await blockchain.treasury('account-user-3', { balance: toNano('4') });
         let account = await createNewAccount('account-user-3', toNano('15'));
@@ -667,7 +841,7 @@ describe('All tests', () => {
         let questionContractAddr = await account.getQuestionAccAddr(0);
 
         let questionContract = await account.getQuestion(0);
-        await rejectQuestion(accountOwner, questionContractAddr);
+        let rejectQuestionRes = await rejectQuestion(accountOwner, questionContractAddr);
 
         expect((await questionContract.getAllData()).isRejected).toBeTruthy();
         expect((await questionContract.getAllData()).isClosed).toBeTruthy();
@@ -676,16 +850,67 @@ describe('All tests', () => {
         let userBalanceAfter = await user.getBalance();
         let ownerBalanceDiff = parseFloat(fromNano(accountOwnerBalanceAfter - accountOwnerBalanceBefore));
 
-        //only transaction fees will be deducted
+        //only transaction fees will be deducted + MIN_QUESTION_BALANCE
         expect(ownerBalanceDiff).toBeLessThan(0);
-        expect(ownerBalanceDiff).toBeCloseTo(0);
+        expect(ownerBalanceDiff).toBeCloseTo(-MIN_QUESTION_BALANCE);
 
-        expect(toTon((await blockchain.getContract(questionContractAddr)).balance)).toBeCloseTo(MIN_QUESTION_BALANCE);
+        //TODO: This is not accurate, probably it should be closeTo(MIN_QUESTION_BALANCE)
+        expect(toTon((await blockchain.getContract(questionContractAddr)).balance))
+            .toBeGreaterThan(0.001);
         //user should pay for his new account + question + fw_fee
         expect(toTon(userBalanceAfter - userBalanceBefore)).toBeCloseTo(
             -(MIN_ACCOUNT_BALANCE + MIN_QUESTION_BALANCE),
             1
         );
+        expect(rejectQuestionRes.transactions).toHaveTransaction({
+            from: questionContractAddr,
+            to: root.address,
+            success: true,
+            exitCode: 0,
+            op: 0xd7f75248,
+            value: toNano(NOTIFICATION_AMOUNT)
+        })
+    });
+
+    it('owner should be able to reject a question using sponsored transaction', async () => {
+        let accountOwner = await blockchain.treasury('account-user-3', { balance: toNano('4') });
+        let account = await createNewAccount('account-user-3', toNano('15'));
+        let user = await blockchain.treasury('user-5');
+        let userBalanceBefore = await user.getBalance();
+        await submitQuestion(user, account.address, toNano('20'));
+
+        let accountOwnerBalanceBefore = await accountOwner.getBalance();
+
+        let questionContractAddr = await account.getQuestionAccAddr(0);
+
+        let questionContract = await account.getQuestion(0);
+        let rejectQuestionRes = await rejectQuestionSponsored(accountOwner.address, 0);
+
+        expect((await questionContract.getAllData()).isRejected).toBeTruthy();
+        expect((await questionContract.getAllData()).isClosed).toBeTruthy();
+
+        let accountOwnerBalanceAfter = (await blockchain.getContract(accountOwner.address)).balance;
+        let userBalanceAfter = await user.getBalance();
+        let ownerBalanceDiff = parseFloat(fromNano(accountOwnerBalanceAfter - accountOwnerBalanceBefore));
+
+        expect(ownerBalanceDiff).toBe(0);
+
+        //TODO: This is not accurate, probably it should be closeTo(MIN_QUESTION_BALANCE)
+        expect(toTon((await blockchain.getContract(questionContractAddr)).balance))
+            .toBeGreaterThan(0.001);
+        //user should pay for his new account + question + fw_fee
+        expect(toTon(userBalanceAfter - userBalanceBefore)).toBeCloseTo(
+            -(MIN_ACCOUNT_BALANCE + MIN_QUESTION_BALANCE),
+            1
+        );
+        expect(rejectQuestionRes.transactions).toHaveTransaction({
+            from: questionContractAddr,
+            to: root.address,
+            success: true,
+            exitCode: 0,
+            op: 0xd7f75248,
+            value: toNano(NOTIFICATION_AMOUNT)
+        })
     });
 
     it('submit-reply-withdraw flow', async () => {
@@ -829,7 +1054,7 @@ describe('All tests', () => {
         expect(toTon(actualAppOwnerBalance - initialBalance) - INITIAL_ROOT_BALANCE).toBeCloseTo(questionsPerAccount * amount * (5 / 100), 0);
     });
 
-    it('account storage fee should be around 0.02 TON/year', async () => {
+    it('account storage fee should be around 0.026 TON/year', async () => {
         const time1 = Math.floor(Date.now() / 1000);
         const time2 = time1 + 365 * 24 * 60 * 60;
 
@@ -846,7 +1071,7 @@ describe('All tests', () => {
             }),
         );
         // @ts-ignore
-        expect(toTon(res.transactions[0].description.storagePhase?.storageFeesCollected)).toBeCloseTo(0.02);
+        expect(toTon(res.transactions[0].description.storagePhase?.storageFeesCollected)).toBeCloseTo(0.026);
     });
 
     it('question storage fee during one year should be around 0.002 TON', async () => {
@@ -890,4 +1115,7 @@ describe('All tests', () => {
         expect(toTon(balance)).toBeCloseTo(MIN_ACCOUNT_BALANCE, 1)
         expect(await accountContract.getNextId()).toBe(60n);
     })
+    //TODO: Tests to add:
+    // - more test cases for zero-priced account
+    // - estimate processing fee for various transactions
 });

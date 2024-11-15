@@ -38,11 +38,14 @@ export class Root implements Contract {
         return new Root(contractAddress(workchain, init), init);
     }
 
-    async sendDeploy(provider: ContractProvider, via: Sender, value: bigint) {
+    async sendDeploy(provider: ContractProvider, via: Sender, value: bigint, sponsor: Address) {
         await provider.internal(via, {
             value,
             sendMode: SendMode.PAY_GAS_SEPARATELY,
-            body: beginCell().storeUint(BigInt("0x1783f31b"), 32).storeUint(123, 64).endCell(),
+            body: beginCell()
+                .storeUint(BigInt("0x1783f31b"), 32)
+                .storeAddress(sponsor)
+                .endCell(),
         });
     }
 
@@ -51,7 +54,6 @@ export class Root implements Contract {
             value: toNano(0.01),
             body: beginCell()
                 .storeUint(BigInt('0xa17c9cd6'), 32)
-                .storeUint(123, 64)
                 .endCell()
         })
     }

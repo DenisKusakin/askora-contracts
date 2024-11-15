@@ -14,7 +14,7 @@ export async function run(provider: NetworkProvider) {
     //         questionRefCode
     //     },
     //     rootCode));
-    const root = provider.open(Root.createFromAddress(Address.parse("EQDBDJbpECe3iJ_0RXWpAxmFEJgyUeoTyBzweYbOM9sCfG14")))
+    const root = provider.open(Root.createFromAddress(Address.parse("EQDEIlBiakOObFk1BEOwFD8Xn3jtnr0qaYnMIgQAvNTlX-_x")))
 
     console.log("Root address", root.address.toString());
     await root.sendWithdrawSafe(provider.sender());

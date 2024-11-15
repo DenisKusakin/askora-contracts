@@ -69,12 +69,14 @@ export class Account implements Contract {
         let minPrice = rootCell.loadCoins();
         let assignedQuestionsCount = rootCell.loadUint(32);
         let submittedQuestionsCount = rootCell.loadUint(32);
+        let description = rootCell.loadRef().beginParse().loadStringTail();
 
         return {
             owner,
             minPrice,
             assignedQuestionsCount,
             submittedQuestionsCount,
+            description
         };
     }
 
