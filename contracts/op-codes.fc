@@ -1,26 +1,28 @@
 ;; Root
 const int op::deploy_root = 0x1783f31b;
 const int op::create_account = 0x5f0ec1a3;
-const int op::create_account_sponsored = 0x74385f77;
 const int op::withdraw_safe = 0xa17c9cd6;
 const int op::paynquiry_withdrawal = 0x1f27c751;
+;; Sponsored
+const int op::create_account_sponsored = 0x74385f77;
+const int op::update_price_sponsored = 0xbef672d6;
+const int op::update_description_sponsored = 0xcc3612de;
+const int op::reply_sponsored = 0xd9c2a251;
+const int op::reject_sponsored = 0x23b39f85;
+const int op::change_sponsor = 0x718b6b7d;
 
 ;; Account
 const int op::deploy_account = 0x3922d770;
 const int op::create_question = 0x28b1e47a;
 const int op::update_price = 0xaaacc05b;
-const int op::update_price_sponsored = 0xbef672d6;
 const int op::update_description = 0x901bca3e;
-const int op::update_description_sponsored = 0xcc3612de;
 
 ;;Question
 const int op::reply = 0xfda8c6e0;
-const int op::reply_sponsored = 0xd9c2a251;
 const int op::deploy_question = 0x370d4b02;
 const int op::reply_reward = 0x47a8d443;
 const int op::service_fee = 0xb41917c2;
 const int op::reject = 0xa5c566b9;
-const int op::reject_sponsored = 0x23b39f85;
 const int op::return_on_reject = 0x943108a6;
 const int op::cancel = 0x5616c572;
 

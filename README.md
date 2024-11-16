@@ -1,26 +1,13 @@
 # Askora
 
-## Project structure
+## Create question message flow
 
--   `contracts` - source code of all the smart contracts of the project and their dependencies.
--   `wrappers` - wrapper classes (implementing `Contract` from ton-core) for the contracts, including any [de]serialization primitives and compilation functions.
--   `tests` - tests for the contracts.
--   `scripts` - scripts used by the project, mainly the deployment scripts.
+![Create question](create-question.png)
 
-## How to use
+## Reply to question message flow
 
-### Build
+![Create question](reply-to-question.png)
 
-`npx blueprint build` or `yarn blueprint build`
+## Reject question message flow
 
-### Test
-
-`npx blueprint test` or `yarn blueprint test`
-
-### Deploy or run another script
-
-`npx blueprint run` or `yarn blueprint run`
-
-### Add a new contract
-
-`npx blueprint create ContractName` or `yarn blueprint create ContractName`
+![Create question](reject-question.png)

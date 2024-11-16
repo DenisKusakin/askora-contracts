@@ -11,6 +11,7 @@ import { compile } from '@ton/blueprint';
 import { randomBytes } from 'node:crypto';
 import { Root } from '../wrappers/Root';
 import { findTransaction } from '@ton/test-utils';
+import { MessageValue } from '@ton/core/dist/types/Message';
 
 const TON_STEP = 0.01;
 const MIN_QUESTION_BALANCE = TON_STEP;
@@ -137,7 +138,7 @@ describe('All tests', () => {
         expect(actualFullData2).toStrictEqual(expectedFullData);
     });
 
-    it('should deploy sponsored account', async () => {
+    it('should deploy account using sponsored transaction', async () => {
         let user = await blockchain.treasury('user-1');
 
         let {accountContract, transactionsRes} = await createNewAccountSponsored(user.address, toNano(10), 'test description', toNano(0.05));
@@ -173,6 +174,48 @@ describe('All tests', () => {
         //@ts-ignore
         const coinsInTransaction = toTon(excessReturnTransaction.inMessage.info.value.coins)
         expect(coinsInTransaction).toBeCloseTo(0.05 - MIN_ACCOUNT_BALANCE, 1)
+    });
+
+    it('service owner should change sponsor', async () => {
+        let user = await blockchain.treasury('user-1');
+        let newSponsor = await blockchain.treasury('new-sponsor')
+        await deployer.send({
+            to: root.address,
+            value: toNano(0.01),
+            body: beginCell()
+                .storeUint(BigInt("0x718b6b7d"), 32)
+                .storeAddress(newSponsor.address)
+                .endCell()
+        })
+
+        //New sponsor could create an account
+        await newSponsor.send({
+            value: toNano(0.1),
+            to: root.address,
+            body: beginCell()
+                .storeUint(BigInt('0x74385f77'), 32)
+                .storeAddress(user.address)
+                .storeCoins(toNano(10))
+                .storeRef(beginCell().storeStringTail('test').endCell())
+                .endCell(),
+        });
+
+        let accountContract = await root.getAccount(user.address)
+        let actualAccountDataRaw = await accountContract.getAllData()
+        let actualAccountData = {
+            owner: actualAccountDataRaw.owner.toRawString(),
+            submittedQuestionsCount: actualAccountDataRaw.submittedQuestionsCount,
+            assignedQuestionsCount: actualAccountDataRaw.assignedQuestionsCount,
+            minPrice: actualAccountDataRaw.minPrice,
+            description: actualAccountDataRaw.description,
+        }
+        expect(actualAccountData).toStrictEqual({
+            owner: user.address.toRawString(),
+            submittedQuestionsCount: 0,
+            assignedQuestionsCount: 0,
+            minPrice: toNano(10),
+            description: 'test'
+        })
     });
 
     async function getQuestionAddrFromRef(questionRef: SmartContract) {
@@ -215,15 +258,15 @@ describe('All tests', () => {
         expect((await questionContract.getAllData()).isClosed).toBe(false);
         expect(toTon((await blockchain.getContract(questionContract.address)).balance)).toBeCloseTo(10.5, 0);
 
-        let actualQuestionFullData = await questionContract.getAllData();
-        let actualQuestionFullData2 = {
-            isClosed: actualQuestionFullData.isClosed,
-            isRejected: actualQuestionFullData.isRejected,
-            content: actualQuestionFullData.content,
-            replyContent: actualQuestionFullData.replyContent,
-            submitterAddr: actualQuestionFullData.submitterAddr.toRawString(),
-            accountAddr: actualQuestionFullData.accountAddr.toRawString(),
-            minPrice: actualQuestionFullData.minPrice
+        let actualQuestionFullDataRaw = await questionContract.getAllData();
+        let actualQuestionFullData = {
+            isClosed: actualQuestionFullDataRaw.isClosed,
+            isRejected: actualQuestionFullDataRaw.isRejected,
+            content: actualQuestionFullDataRaw.content,
+            replyContent: actualQuestionFullDataRaw.replyContent,
+            submitterAddr: actualQuestionFullDataRaw.submitterAddr.toRawString(),
+            accountAddr: actualQuestionFullDataRaw.accountAddr.toRawString(),
+            minPrice: actualQuestionFullDataRaw.minPrice
         };
         let expectedQuestionFullData = {
             isClosed: false,
@@ -235,9 +278,9 @@ describe('All tests', () => {
             minPrice: toNano(10)
         };
 
-        expect(actualQuestionFullData2).toStrictEqual(expectedQuestionFullData);
+        expect(actualQuestionFullData).toStrictEqual(expectedQuestionFullData);
         expect(toTon((await blockchain.getContract(questionContract.address)).balance)).toBeCloseTo(10.5, 0);
-        expect(actualQuestionFullData.createdAt).toBe(time);
+        expect(actualQuestionFullDataRaw.createdAt).toBe(time);
 
         expect(submitQuestionRes.transactions).toHaveTransaction({
             from: questionContractAddr,
@@ -447,15 +490,15 @@ describe('All tests', () => {
         expect(toTon((await blockchain.getContract(questionContract.address)).balance))
             .toBeCloseTo(0.8 + 5*0.8/100 + MIN_QUESTION_BALANCE);
 
-        let actualQuestionFullData = await questionContract.getAllData();
-        let actualQuestionFullData2 = {
-            isClosed: actualQuestionFullData.isClosed,
-            isRejected: actualQuestionFullData.isRejected,
-            content: actualQuestionFullData.content,
-            replyContent: actualQuestionFullData.replyContent,
-            submitterAddr: actualQuestionFullData.submitterAddr.toRawString(),
-            accountAddr: actualQuestionFullData.accountAddr.toRawString(),
-            minPrice: actualQuestionFullData.minPrice
+        let actualQuestionFullDataRaw = await questionContract.getAllData();
+        let actualQuestionFullData = {
+            isClosed: actualQuestionFullDataRaw.isClosed,
+            isRejected: actualQuestionFullDataRaw.isRejected,
+            content: actualQuestionFullDataRaw.content,
+            replyContent: actualQuestionFullDataRaw.replyContent,
+            submitterAddr: actualQuestionFullDataRaw.submitterAddr.toRawString(),
+            accountAddr: actualQuestionFullDataRaw.accountAddr.toRawString(),
+            minPrice: actualQuestionFullDataRaw.minPrice
         };
         let expectedQuestionFullData = {
             isClosed: false,
@@ -467,8 +510,8 @@ describe('All tests', () => {
             minPrice: toNano(0.8)
         };
 
-        expect(actualQuestionFullData2).toStrictEqual(expectedQuestionFullData);
-        expect(actualQuestionFullData.createdAt).toBe(time);
+        expect(actualQuestionFullData).toStrictEqual(expectedQuestionFullData);
+        expect(actualQuestionFullDataRaw.createdAt).toBe(time);
     });
 
     it('should NOT create question if not enough money', async () => {
@@ -685,7 +728,7 @@ describe('All tests', () => {
         expect(await account.getPrice()).toBe(toNano(15));
     });
 
-    it('user should be able to change the price sponsored', async () => {
+    it('user should be able to change the price using sponsored transaction', async () => {
         let account = await createNewAccount('account-user', toNano('10'));
         let accountUser = await blockchain.treasury('account-user');
 
@@ -715,7 +758,7 @@ describe('All tests', () => {
         expect((await account.getAllData()).description).toBe('new description');
     });
 
-    it('user should be able to change account description sponsored', async () => {
+    it('user should be able to change account description using sponsored transaction', async () => {
         let account = await createNewAccount('account-user', toNano('10'));
         let accountUser = await blockchain.treasury('account-user');
 

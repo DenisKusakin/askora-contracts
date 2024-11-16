@@ -38,7 +38,6 @@ const int max_valid_seconds = 7 * 24 * 60 * 60; ;;7 days
         .store_uint(id, 32)
         .store_slice(submitter_addr)
         .store_ref(add_addrs)
-        ;;TODO: Can we store flags as 1 bit?
         .store_int(is_closed, 32)
         .store_int(is_rejected, 32)
         .end_cell()
@@ -216,7 +215,6 @@ cell get_all_data() method_id {
         if (service_fee > 0) {
             send_service_fee(service_fee_addr, service_fee, op::service_fee);
         }
-        ;;send_coins_with_comment(submitter_addr, notification_amount, "askora. Your question has been answered!🔥");
         ;;TODO: don't send twice if service fee > 0
         send_question_notification(service_fee_addr, op::question_replied_notification, notification_amount, owner_addr_s, id, submitter_addr);
         return ();

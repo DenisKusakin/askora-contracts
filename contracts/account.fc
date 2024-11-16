@@ -197,13 +197,10 @@ cell get_all_data() method_id {
         int next_question_idx, int next_submitted_question_idx, int min_price, cell description) = load_data();
 
     if (op == op::deploy_account & null?(next_question_idx)) {
-        ;; TODO: should it be restricted???
-        ;; throw_unless(403, equal_slices(sender_addr, service_owner_addr));
         int min_price_from_msg = in_msg_body~load_coins();
         cell description_from_msg = in_msg_body~load_ref();
         var is_sponsored = in_msg_body~load_int(32);
         if (is_sponsored == true){
-            ;; sponsored transaction only allowed from the root contract
             throw_unless(403, equal_slices(sender_addr, service_owner_addr));
         }
 

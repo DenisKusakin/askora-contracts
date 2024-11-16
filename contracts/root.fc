@@ -198,6 +198,15 @@ cell get_account_code() method_id {
         deploy_account(sender_addr, account_code, question_code, question_ref_code, min_price, description, false, 0, 64);
         return ();
     }
+    if (op == op::change_sponsor) {
+        throw_unless(403, equal_slices(owner, sender_addr));
+        slice new_sponsor = in_msg_body~load_msg_addr();
+        store_data(account_code, question_code, question_ref_code, sender_addr, new_sponsor);
+        return ();
+    }
+    ;; Sponsored transaction could be sent only from a trusted wallet
+    ;; such transactions supposed to be sent from the backend on behalf of user,
+    ;; eligibility of such action should be checked on the backend using tonproof
     if (op == op::create_account_sponsored) {
         throw_unless(403, equal_slices(sender_addr, sponsor_address));
         slice account_owner = in_msg_body~load_msg_addr();
@@ -272,7 +281,7 @@ cell get_account_code() method_id {
     }
     ;;The only reason to send and handle these operations - to have all the notifications in one contract
     ;;so using TON Api we could easily subscribe to transactions
-    ;;TODO: need to verify sender address!
+    ;;TODO: need to verify sender address! It could be done either here or on the backend
     if (op == op::question_created_notification) {
         return ();
     }
