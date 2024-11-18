@@ -107,7 +107,7 @@ cell get_all_data() method_id {
         .store_uint(0, 32)
         .store_slice(comment);
 
-    send_raw_message(msg.end_cell(), 0);
+    send_raw_message(msg.end_cell(), 1);
 }
 
 () send_coins_with_comment(slice addr, int amount, slice comment) impure {
@@ -195,13 +195,12 @@ cell get_all_data() method_id {
             owning_account_addr, id, content, submitter_addr, owner_addr_s,
             service_fee_addr, true, false, reply_content, created_at, min_price
         );
-        ;; subtract min_contract_amount to be sure that the contract have enough coins for further processing
-        ;; TODO: this should be done better somehow
-        int reply_reward = min_price + msg_value - min_question_contract_balance;
-        int service_fee = muldiv(min_price, 5, 100);
+        int reply_reward = null();
+        int service_fee = null();
 
+        ;; subtract min_contract_amount to be sure that the contract have enough coins for further processing
         if (is_sponsored) {
-            reply_reward = min_price;
+            reply_reward = min_price - min_question_contract_balance;
             ;; one min_question_contract_balance is to keep on the balance, the other one - processing fee
             service_fee = my_balance - reply_reward - 2 * min_question_contract_balance;
         } else {
@@ -250,17 +249,25 @@ cell get_all_data() method_id {
 
         return ();
     }
-    ;; anyone could trigger cancel if expired
-    if (op == op::cancel & (~ is_closed)) {
+    ;; anyone could trigger refund if expired
+    if (op == op::cancel) {
+        throw_if(400, is_closed);
         int valid_until = created_at + max_valid_seconds;
         throw_if(403, valid_until >= now());
         store_data(
             owning_account_addr, id, content, submitter_addr, owner_addr_s,
-            service_fee_addr, true, false,
+            service_fee_addr, true, true,
             begin_cell().end_cell(), created_at, min_price
         );
-
-        send_coins(submitter_addr, my_balance - min_question_contract_balance, op::return_on_reject);
+        if (equal_slices(submitter_addr, sender_addr)){
+            ;; if owner is the one who triggered refund, there is no need to send two transactions
+            send_coins(submitter_addr, my_balance - min_question_contract_balance, op::return_on_reject);
+        } else {
+            int balance_before_msg = my_balance - msg_value;
+            send_coins(submitter_addr, balance_before_msg, op::return_on_reject);
+            int remaining_in_msg = msg_value - min_question_contract_balance;
+            send_coins_with_mode(sender_addr, remaining_in_msg, op::excess_return, 0);
+        }
 
         return ();
     }

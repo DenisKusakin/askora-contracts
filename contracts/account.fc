@@ -197,6 +197,7 @@ cell get_all_data() method_id {
         int next_question_idx, int next_submitted_question_idx, int min_price, cell description) = load_data();
 
     if (op == op::deploy_account & null?(next_question_idx)) {
+        ;; Anyone could deploy an account, this should not be a problem
         int min_price_from_msg = in_msg_body~load_coins();
         cell description_from_msg = in_msg_body~load_ref();
         var is_sponsored = in_msg_body~load_int(32);
